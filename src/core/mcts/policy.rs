@@ -9,41 +9,60 @@ use super::evaluator::Evaluator;
 use super::search::GumbelMCTS;
 use crate::core::env::GameEnv;
 
+/// 掩码 softmax（数值稳定）：仅对 `masks[i] == 1` 的位置计算概率。
+///
+/// `uniform_fallback = true` 时，若所有合法分数均非有限或求和为 0，
+/// 回退到合法位置上的均匀分布（避免全 0 policy 导致训练目标被污染）。
+fn masked_softmax(scores: &[f32], masks: &[i32], uniform_fallback: bool) -> Vec<f32> {
+    let mut probs = vec![0.0; scores.len()];
+    let uniform_fill = |probs: &mut Vec<f32>| {
+        let count = masks.iter().filter(|&&m| m == 1).count() as f32;
+        if count > 0.0 {
+            for (i, &m) in masks.iter().enumerate() {
+                if m == 1 {
+                    probs[i] = 1.0 / count;
+                }
+            }
+        }
+    };
+
+    let mut max_score = f32::NEG_INFINITY;
+    for (i, &s) in scores.iter().enumerate() {
+        if masks[i] == 1 && s > max_score {
+            max_score = s;
+        }
+    }
+    if !max_score.is_finite() {
+        if uniform_fallback {
+            uniform_fill(&mut probs);
+        }
+        return probs;
+    }
+
+    let mut sum = 0.0;
+    for (i, &s) in scores.iter().enumerate() {
+        if masks[i] == 1 && s.is_finite() {
+            let value = (s - max_score).exp();
+            probs[i] = value;
+            sum += value;
+        }
+    }
+
+    if sum > 0.0 {
+        for p in &mut probs {
+            *p /= sum;
+        }
+    } else if uniform_fallback {
+        uniform_fill(&mut probs);
+    }
+
+    probs
+}
+
 impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
     /// 根据 Logits 和动作掩码计算概率分布
     pub(crate) fn compute_probs_from_logits(&self, logits: &[f32], masks: &[i32]) -> Vec<f32> {
-        let mut probs = vec![0.0; logits.len()];
-        let mut max_logit = f32::NEG_INFINITY;
-
-        // 第一遍：找到最大 logit（数值稳定性）
-        for (i, &logit) in logits.iter().enumerate() {
-            if masks[i] == 1 && logit > max_logit {
-                max_logit = logit;
-            }
-        }
-
-        if !max_logit.is_finite() {
-            return probs;
-        }
-
-        // 第二遍：计算指数并求和
-        let mut sum = 0.0;
-        for (i, &logit) in logits.iter().enumerate() {
-            if masks[i] == 1 {
-                let value = (logit - max_logit).exp();
-                probs[i] = value;
-                sum += value;
-            }
-        }
-
-        // 第三遍：归一化
-        if sum > 0.0 {
-            for p in &mut probs {
-                *p /= sum;
-            }
-        }
-
-        probs
+        masked_softmax(logits, masks, false)
     }
 
     // ========================================================================
@@ -92,10 +111,9 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
     ///
     /// 使用 root 的先验 logit 与 completed_Q 直接组合，计算 softmax 概率。
     pub fn get_improved_policy(&self) -> Vec<f32> {
-        let mut policy = vec![0.0; G::action_space_size()];
         let env = match self.arena.get(self.root_idx).env.as_ref() {
             Some(env) => env,
-            None => return policy,
+            None => return vec![0.0; G::action_space_size()],
         };
 
         let mut masks = vec![0; G::action_space_size()];
@@ -108,28 +126,18 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         let sigma_scale = self.config.c_scale * (1.0 + root_visit_count).ln();
 
         let mut scores = vec![f32::NEG_INFINITY; G::action_space_size()];
-        let mut max_score = f32::NEG_INFINITY;
 
         for action in 0..G::action_space_size() {
             if masks[action] != 1 {
                 continue;
             }
-            let child_idx = match root
-                .children
-                .iter()
-                .find(|(act, _)| *act == action)
-                .map(|(_, idx)| *idx)
-            {
+            let child_idx = match root.child_idx(action) {
                 Some(idx) => idx,
                 None => continue,
             };
             let child = self.arena.get(child_idx);
             let q = self.completed_q(action);
-            let score = child.logit + sigma_scale * q;
-            scores[action] = score;
-            if score > max_score {
-                max_score = score;
-            }
+            scores[action] = child.logit + sigma_scale * q;
         }
 
         // 3. 计算 Softmax（带数值稳定性）
@@ -138,44 +146,6 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         //   - 全 0 policy 进入训练会让 policy_loss 变为 0（梯度消失，策略头退化）；
         //   - 若与 -inf 的 log_softmax 相乘还会产生 NaN。
         // 均匀回退至少保留一个合法归一化分布，避免训练目标被污染。
-        if !max_score.is_finite() {
-            let count = masks.iter().sum::<i32>() as f32;
-            if count > 0.0 {
-                for i in 0..G::action_space_size() {
-                    if masks[i] == 1 {
-                        policy[i] = 1.0 / count;
-                    }
-                }
-            }
-            return policy;
-        }
-
-        let mut sum = 0.0;
-        for action in 0..G::action_space_size() {
-            let score = scores[action];
-            if score.is_finite() {
-                let value = (score - max_score).exp();
-                policy[action] = value;
-                sum += value;
-            }
-        }
-
-        // 4. 归一化概率，异常时回退到均匀分布
-        if sum > 0.0 {
-            for p in policy.iter_mut() {
-                *p /= sum;
-            }
-        } else {
-            let count = masks.iter().sum::<i32>() as f32;
-            if count > 0.0 {
-                for i in 0..G::action_space_size() {
-                    if masks[i] == 1 {
-                        policy[i] = 1.0 / count;
-                    }
-                }
-            }
-        }
-
-        policy
+        masked_softmax(&scores, &masks, true)
     }
 }

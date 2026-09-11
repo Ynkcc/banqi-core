@@ -1,7 +1,7 @@
+use super::cache::{cached, global_cache};
 use super::config::GameConfig;
 use super::constants::{DIRECTION_DOWN, DIRECTION_LEFT, DIRECTION_RIGHT, DIRECTION_UP, NUM_DIRECTIONS};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::Arc;
 
 // ==============================================================================
 // --- Bitboard 辅助函数（config 驱动） ---
@@ -76,32 +76,13 @@ fn ray_key(cfg: &GameConfig) -> u64 {
     ((cfg.rows as u64) << 16) | (cfg.cols as u64)
 }
 
-static RAY_CACHE: OnceLock<Mutex<HashMap<u64, Arc<Vec<Vec<u64>>>>>> = OnceLock::new();
-
-fn ray_cache() -> &'static Mutex<HashMap<u64, Arc<Vec<Vec<u64>>>>> {
-    RAY_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// 加锁。锁中毒说明曾有线程在持有该锁时 panic，状态不可信，应尽早暴露而非静默继续。
-fn lock_cache() -> MutexGuard<'static, HashMap<u64, Arc<Vec<Vec<u64>>>>> {
-    ray_cache()
-        .lock()
-        .expect("ray cache lock poisoned: 持有锁的线程发生 panic")
-}
+global_cache!(RAY_CACHE, ray_cache, Vec<Vec<u64>>);
 
 /// 射线攻击预计算表：`ray_attacks[dir][sq]` 表示从 sq 沿 dir 方向所有可达格。
 /// dir 约定：0=上, 1=下, 2=左, 3=右。
 pub fn ray_attacks(cfg: &GameConfig) -> Arc<Vec<Vec<u64>>> {
     let key = ray_key(cfg);
-    {
-        let cache = lock_cache();
-        if let Some(t) = cache.get(&key) {
-            return Arc::clone(t);
-        }
-    }
-    let table = build_ray_attacks(cfg);
-    let mut cache = lock_cache();
-    cache.entry(key).or_insert_with(|| Arc::new(table)).clone()
+    cached(ray_cache(), key, || build_ray_attacks(cfg))
 }
 
 fn build_ray_attacks(cfg: &GameConfig) -> Vec<Vec<u64>> {

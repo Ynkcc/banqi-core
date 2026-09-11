@@ -16,9 +16,9 @@
 // ==============================================================================
 
 use super::actions::{action_lookup_tables, pack_coords, ActionLookupTables};
+use super::cache::{cached, global_cache};
 use super::config::GameConfig;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 
 /// 空间对称变换枚举。
 ///
@@ -85,29 +85,19 @@ fn cache_key(rows: usize, cols: usize, sym: Symmetry) -> u64 {
     ((rows as u64) << 32) | ((cols as u64) << 8) | (sym as u64)
 }
 
-/// 动作置换表缓存：key -> Arc<Vec<perm>>（perm: new_policy = old_policy[perm]）。
-static PERM_CACHE: OnceLock<Mutex<HashMap<u64, Arc<Vec<usize>>>>> = OnceLock::new();
-/// 格子重排表缓存：key -> Arc<Vec<map>>（map[i] = 变换后位置 i 的原格子索引）。
-static SQMAP_CACHE: OnceLock<Mutex<HashMap<u64, Arc<Vec<usize>>>>> = OnceLock::new();
-
-fn perm_cache() -> &'static Mutex<HashMap<u64, Arc<Vec<usize>>>> {
-    PERM_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn sqmap_cache() -> &'static Mutex<HashMap<u64, Arc<Vec<usize>>>> {
-    SQMAP_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
+// 动作置换表缓存：key -> Arc<Vec<perm>>（perm: new_policy = old_policy[perm]）。
+global_cache!(PERM_CACHE, perm_cache, Vec<usize>);
+// 格子重排表缓存：key -> Arc<Vec<map>>（map[i] = 变换后位置 i 的原格子索引）。
+global_cache!(SQMAP_CACHE, sqmap_cache, Vec<usize>);
 
 /// 生成格子重排表：`map[i] = 变换后位置 i 对应的原格子索引`。
 /// 与 Python `data_augmentation.py::_sq_map` 逐条一致。
 pub fn sq_map(rows: usize, cols: usize, sym: Symmetry) -> Arc<Vec<usize>> {
     let key = cache_key(rows, cols, sym);
-    {
-        let cache = sqmap_cache().lock().unwrap();
-        if let Some(t) = cache.get(&key) {
-            return Arc::clone(t);
-        }
-    }
+    cached(sqmap_cache(), key, || build_sq_map(rows, cols, sym))
+}
+
+fn build_sq_map(rows: usize, cols: usize, sym: Symmetry) -> Vec<usize> {
     let total = rows * cols;
     let mut map = vec![0usize; total];
     let r = rows as i64;
@@ -130,9 +120,7 @@ pub fn sq_map(rows: usize, cols: usize, sym: Symmetry) -> Arc<Vec<usize>> {
             map[rr * cols + cc] = (pr * cols as i64 + pc) as usize;
         }
     }
-    let arc = Arc::new(map);
-    sqmap_cache().lock().unwrap().insert(key, Arc::clone(&arc));
-    arc
+    map
 }
 
 /// 生成动作置换表：`perm` 满足 `new_policy = old_policy[perm]`。
@@ -142,12 +130,10 @@ pub fn sq_map(rows: usize, cols: usize, sym: Symmetry) -> Arc<Vec<usize>> {
 /// 得到目标动作 dest，置 `perm[dest] = a`。
 pub fn action_permutation(cfg: &GameConfig, sym: Symmetry) -> Arc<Vec<usize>> {
     let key = cache_key(cfg.rows, cfg.cols, sym);
-    {
-        let cache = perm_cache().lock().unwrap();
-        if let Some(t) = cache.get(&key) {
-            return Arc::clone(t);
-        }
-    }
+    cached(perm_cache(), key, || build_action_permutation(cfg, sym))
+}
+
+fn build_action_permutation(cfg: &GameConfig, sym: Symmetry) -> Vec<usize> {
     let tables: Arc<ActionLookupTables> = action_lookup_tables(cfg);
     let map = sq_map(cfg.rows, cfg.cols, sym);
     let mut perm = vec![0usize; cfg.action_space_size];
@@ -160,9 +146,7 @@ pub fn action_permutation(cfg: &GameConfig, sym: Symmetry) -> Arc<Vec<usize>> {
             .unwrap_or(a);
         perm[dest] = a;
     }
-    let arc = Arc::new(perm);
-    perm_cache().lock().unwrap().insert(key, Arc::clone(&arc));
-    arc
+    perm
 }
 
 /// 对扁平特征张量沿空间轴重排。

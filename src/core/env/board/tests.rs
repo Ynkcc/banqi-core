@@ -2,6 +2,7 @@
 // DarkChessEnv 单元测试。
 
 use super::*;
+use crate::core::env::traits::GameEnv;
 
 /// 随机走子对局，持续检查每个观测的 bitboard 一致性。
 #[test]

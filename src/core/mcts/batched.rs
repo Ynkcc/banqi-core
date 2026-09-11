@@ -154,42 +154,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> BatchedTree<'a, G, E> {
                 self.ensure_search_prepared();
             }
             Stage::Searching => {
-                let mut eval_values: Vec<(f32, f32)> = Vec::with_capacity(evals.len());
-                for (pending, logits, value, health) in evals {
-                    let mut masks = vec![0; G::action_space_size()];
-                    pending.env.action_masks_into(&mut masks);
-                    let probs = self.tree.compute_probs_from_logits(logits, &masks);
-                    let leaf_idx = GumbelMCTS::<G, E>::get_node_idx_by_path(
-                        &self.tree.arena,
-                        self.tree.root_idx,
-                        &pending.path,
-                    );
-                    {
-                        let leaf = self.tree.arena.get_mut(leaf_idx);
-                        leaf.initial_value = *value;
-                        leaf.initial_health = *health;
-                    }
-                    GumbelMCTS::<G, E>::build_children_from_eval(
-                        &mut self.tree.arena,
-                        leaf_idx,
-                        &pending.env,
-                        &probs,
-                        logits,
-                        *value,
-                        *health,
-                    );
-                    eval_values.push((*value, *health));
-                }
-                let backprop_evals: Vec<(&PendingEval<G>, f32, f32)> = evals
-                    .iter()
-                    .zip(eval_values)
-                    .map(|((pending, _, _, _), (v, h))| (*pending, v, h))
-                    .collect();
-                GumbelMCTS::<G, E>::backprop_evals(
-                    &mut self.tree.arena,
-                    self.tree.root_idx,
-                    &backprop_evals,
-                );
+                self.tree.apply_leaf_evals(evals);
                 // 本轮收集已耗尽：若阶段轮次用完则推进阶段
                 if self.phase_visits_left == 0 {
                     self.advance_phase();
@@ -229,33 +194,12 @@ impl<'a, G: GameEnv, E: Evaluator<G>> BatchedTree<'a, G, E> {
 
     /// 根已展开后：采样候选、初始化 Sequential Halving。根无合法动作时返回 false。
     fn ensure_search_prepared(&mut self) -> bool {
-        let root_idx = self.tree.root_idx;
-        self.tree.root_action_mask.iter_mut().for_each(|m| *m = 0);
-        let env = *self
-            .tree
-            .arena
-            .get(root_idx)
-            .env
-            .as_ref()
-            .expect("Root must have env");
-        env.action_masks_into(&mut self.tree.root_action_mask);
+        self.tree.refresh_root_action_mask();
         if self.tree.root_action_mask.iter().all(|&x| x == 0) {
             self.stage = Stage::Ready;
             return false;
         }
-        let logits: Vec<f32> = (0..G::action_space_size())
-            .map(|i| {
-                let root = self.tree.arena.get(root_idx);
-                root.children
-                    .iter()
-                    .find(|(act, _)| *act == i)
-                    .map(|(_, idx)| self.tree.arena.get(*idx).logit)
-                    .unwrap_or(-1e6)
-            })
-            .collect();
-        let masks_cloned = self.tree.root_action_mask.clone();
-        self.candidates =
-            self.tree.sample_gumbel_top_k(&logits, &masks_cloned, self.tree.config.max_considered_actions);
+        self.candidates = self.tree.sample_root_candidates();
         if self.candidates.is_empty() {
             self.stage = Stage::Ready;
             return false;
@@ -283,32 +227,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> BatchedTree<'a, G, E> {
     }
 
     fn apply_root_eval(&mut self, logits: &[f32], value: f32, health: f32) {
-        let root_idx = self.tree.root_idx;
-        let env = *self
-            .tree
-            .arena
-            .get(root_idx)
-            .env
-            .as_ref()
-            .expect("Root must have env");
-        let mut masks = vec![0; G::action_space_size()];
-        env.action_masks_into(&mut masks);
-        let probs = self.tree.compute_probs_from_logits(logits, &masks);
-        GumbelMCTS::<G, E>::build_children_from_eval(
-            &mut self.tree.arena,
-            root_idx,
-            &env,
-            &probs,
-            logits,
-            value,
-            health,
-        );
-        let root = self.tree.arena.get_mut(root_idx);
-        root.initial_value = value;
-        root.initial_health = health;
-        root.visit_count += 1;
-        root.value_sum += value;
-        root.health_sum += health;
+        self.tree.apply_root_eval(logits, value, health);
     }
 
     /// 尝试从 Ready 状态产出决策动作并执行，进入下一步（Idle → 下次 collect 触发新根评估）。
@@ -328,30 +247,12 @@ impl<'a, G: GameEnv, E: Evaluator<G>> BatchedTree<'a, G, E> {
             self.candidates[0]
         };
 
-        let root = self.tree.arena.get(self.tree.root_idx);
-        let state = match &root.state {
-            Some(s) => s.clone(),
-            None => return false,
+        let Some(result) = self.tree.build_result(action) else {
+            return false;
         };
-        let player = root.player;
-        let improved_policy = self.tree.get_improved_policy();
-        let mcts_value = root.q_value();
-        let completed_q = self.tree.completed_q(action);
-        let root_visit_count = root.visit_count;
-        let action_mask = self.tree.root_action_mask.clone();
-
-        self.result = Some(MctsSearchResult {
-            action,
-            state,
-            improved_policy,
-            mcts_value,
-            completed_q,
-            root_visit_count,
-            player,
-            action_mask,
-        });
+        self.player = result.player;
+        self.result = Some(result);
         self.action = Some(action);
-        self.player = player;
 
         // 执行动作并推进树
         let env_root = self

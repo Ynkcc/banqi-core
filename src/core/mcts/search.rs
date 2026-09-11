@@ -94,23 +94,14 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         let root_node = self.arena.get(self.root_idx);
 
         // 查找子节点
-        let child_idx = root_node
-            .children
-            .iter()
-            .find(|(act, _)| *act == action)
-            .map(|(_, idx)| *idx);
+        let child_idx = root_node.child_idx(action);
 
         if let Some(idx) = child_idx {
             let child = self.arena.get(idx);
             if child.is_chance_node {
                 // 如果是机会节点 (翻牌)，需要根据实际翻出的棋子选择对应的子节点
                 if let Some(outcome_id) = env.step_outcome_id(action) {
-                    if let Some((_, _, next_idx)) = child
-                        .possible_states
-                        .iter()
-                        .find(|(id, _, _)| *id == outcome_id)
-                        .map(|x| *x)
-                    {
+                    if let Some(next_idx) = child.outcome_idx(outcome_id) {
                         self.root_idx = next_idx;
                         let next_node = self.arena.get_mut(next_idx);
                         next_node.is_root_node = true;
@@ -143,12 +134,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
     /// - 根节点不存在该子动作时：返回 0.0（中性）
     pub(crate) fn completed_q(&self, action: usize) -> f32 {
         let root = self.arena.get(self.root_idx);
-        if let Some((_, child_idx)) = root
-            .children
-            .iter()
-            .find(|(act, _)| *act == action)
-            .map(|(act, idx)| (*act, *idx))
-        {
+        if let Some(child_idx) = root.child_idx(action) {
             let child_player = self.arena.get(child_idx).player();
             let q = self.node_q_value(child_idx);
             // 统一到根玩家视角：翻子动作的 child 为机会节点（未执行 step，
@@ -170,12 +156,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
     /// 时并入血量期望，否则与 `completed_q` 一致。
     pub(crate) fn completed_utility(&self, action: usize) -> f32 {
         let root = self.arena.get(self.root_idx);
-        if let Some((_, child_idx)) = root
-            .children
-            .iter()
-            .find(|(act, _)| *act == action)
-            .map(|(act, idx)| (*act, *idx))
-        {
+        if let Some(child_idx) = root.child_idx(action) {
             let child_player = self.arena.get(child_idx).player();
             let u = self.node_utility_value(child_idx);
             value_from_perspective(root.player, child_player, u)
@@ -198,13 +179,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         batch: &mut Vec<PendingEval<G>>,
     ) -> SelectPathOutcome {
         let mut path = vec![PathStep::Action(action)];
-        let current_idx = {
-            let root = self.arena.get(self.root_idx);
-            root.children
-                .iter()
-                .find(|(act, _)| *act == action)
-                .map(|(_, idx)| *idx)
-        };
+        let current_idx = self.arena.get(self.root_idx).child_idx(action);
 
         if current_idx.is_none() {
             eprintln!(
@@ -289,12 +264,11 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                     }
                 };
                 path.push(PathStep::ChanceOutcome(outcome_id));
-                let next_idx = possible_states
+                current_idx = possible_states
                     .iter()
                     .find(|(id, _, _)| *id == outcome_id)
                     .map(|(_, _, idx)| *idx)
                     .expect("Outcome not found");
-                current_idx = next_idx;
                 continue;
             }
 
@@ -396,12 +370,11 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
             };
             path.push(PathStep::Action(act));
             current_action = act;
-            let next_idx = children_clone
+            current_idx = children_clone
                 .iter()
                 .find(|(a, _)| *a == act)
                 .map(|(_, idx)| *idx)
                 .expect("Selected child missing");
-            current_idx = next_idx;
         }
     }
 
@@ -421,14 +394,54 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
             .as_ref()
             .expect("Root must have env");
         let out = self.evaluator.evaluate(std::slice::from_ref(&env));
-        let logits = &out.logits[0];
-        let value = out.values[0];
         let health_mu = if self.config.health_enabled {
             out.health_expectation(0).unwrap_or(0.0)
         } else {
             0.0
         };
+        self.apply_root_eval(&out.logits[0], out.values[0], health_mu);
+    }
 
+    /// 刷新根动作掩码（run 与 batched 根准备共用）。
+    pub(crate) fn refresh_root_action_mask(&mut self) {
+        let env = *self
+            .arena
+            .get(self.root_idx)
+            .env
+            .as_ref()
+            .expect("Root must have env");
+        self.root_action_mask.iter_mut().for_each(|m| *m = 0);
+        env.action_masks_into(&mut self.root_action_mask);
+    }
+
+    /// 收集根节点各动作的 logits（未出现的动作填 -1e6）。
+    pub(crate) fn root_logits(&self) -> Vec<f32> {
+        (0..G::action_space_size())
+            .map(|i| {
+                self.arena
+                    .get(self.root_idx)
+                    .child_idx(i)
+                    .map(|idx| self.arena.get(idx).logit)
+                    .unwrap_or(-1e6)
+            })
+            .collect()
+    }
+
+    /// Gumbel Top-K 采样根候选动作（run 与 batched 共用；依赖 root_action_mask 已刷新）。
+    pub(crate) fn sample_root_candidates(&mut self) -> Vec<usize> {
+        let logits = self.root_logits();
+        let masks_cloned = self.root_action_mask.clone();
+        self.sample_gumbel_top_k(&logits, &masks_cloned, self.config.max_considered_actions)
+    }
+
+    /// 根扩展：以评估结果构建子节点并写入初始值 / 访问计数（run 与 batched 共用）。
+    pub(crate) fn apply_root_eval(&mut self, logits: &[f32], value: f32, health_mu: f32) {
+        let env = *self
+            .arena
+            .get(self.root_idx)
+            .env
+            .as_ref()
+            .expect("Root must have env");
         let mut masks = vec![0; G::action_space_size()];
         env.action_masks_into(&mut masks);
         let probs = self.compute_probs_from_logits(logits, &masks);
@@ -451,6 +464,41 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         root.health_sum += health_mu;
     }
 
+    /// 叶子批量回填：masks→probs→定位叶→写入 initial_value/health→扩展子节点→加权回传。
+    ///
+    /// `evals` 与最近一次 select_path_collect 收集（或 batched collect）顺序一致。
+    /// run 与 batched 共用。
+    pub(crate) fn apply_leaf_evals(&mut self, evals: &[(&PendingEval<G>, &[f32], f32, f32)]) {
+        let mut eval_values: Vec<(f32, f32)> = Vec::with_capacity(evals.len());
+        for (pending, logits, value, health) in evals {
+            let mut masks = vec![0; G::action_space_size()];
+            pending.env.action_masks_into(&mut masks);
+            let probs = self.compute_probs_from_logits(logits, &masks);
+            let leaf_idx = Self::get_node_idx_by_path(&self.arena, self.root_idx, &pending.path);
+            {
+                let leaf = self.arena.get_mut(leaf_idx);
+                leaf.initial_value = *value;
+                leaf.initial_health = *health;
+            }
+            Self::build_children_from_eval(
+                &mut self.arena,
+                leaf_idx,
+                &pending.env,
+                &probs,
+                logits,
+                *value,
+                *health,
+            );
+            eval_values.push((*value, *health));
+        }
+        let backprop_evals: Vec<(&PendingEval<G>, f32, f32)> = evals
+            .iter()
+            .zip(eval_values)
+            .map(|((pending, _, _, _), (v, h))| (*pending, v, h))
+            .collect();
+        Self::backprop_evals(&mut self.arena, self.root_idx, &backprop_evals);
+    }
+
     /// 执行 Gumbel MCTS 搜索主循环
     ///
     /// 1. 扩展根节点。
@@ -465,60 +513,19 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         // 1. 扩展根节点
         self.expand_root();
 
-        let env = self
-            .arena
-            .get(self.root_idx)
-            .env
-            .as_ref()
-            .expect("Root must have env");
-        self.root_action_mask.iter_mut().for_each(|m| *m = 0);
-        env.action_masks_into(&mut self.root_action_mask);
-
+        self.refresh_root_action_mask();
         if self.root_action_mask.iter().all(|&x| x == 0) {
             return None;
         }
 
-        // 2. 收集 logits
-        let logits: Vec<f32> = (0..G::action_space_size())
-            .map(|i| {
-                let root = self.arena.get(self.root_idx);
-                root.children
-                    .iter()
-                    .find(|(act, _)| *act == i)
-                    .map(|(_, idx)| self.arena.get(*idx).logit)
-                    .unwrap_or(-1e6)
-            })
-            .collect();
-
-        // 3. Gumbel-Top-K 采样 (克隆 mask 以避免借用冲突)
-        let masks_cloned = self.root_action_mask.clone();
-        let candidates =
-            self.sample_gumbel_top_k(&logits, &masks_cloned, self.config.max_considered_actions);
+        // 2. Gumbel-Top-K 采样根候选动作
+        let candidates = self.sample_root_candidates();
         if candidates.is_empty() {
             return None;
         }
         if candidates.len() == 1 {
             // 只有一个候选动作，直接返回
-            let action = candidates[0];
-            let root = self.arena.get(self.root_idx);
-            let state = root.state.clone()?;
-            let player = root.player;
-            let improved_policy = self.get_improved_policy();
-            let mcts_value = root.q_value();
-            let completed_q = self.completed_q(action);
-            let root_visit_count = root.visit_count;
-            let action_mask = self.root_action_mask.clone();
-
-            return Some(MctsSearchResult {
-                action,
-                state,
-                improved_policy,
-                mcts_value,
-                completed_q,
-                root_visit_count,
-                player,
-                action_mask,
-            });
+            return self.build_result(candidates[0]);
         }
 
         // 4. Sequential Halving - 使用新的预算分配器
@@ -559,43 +566,19 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                     total_phase_usage += eval_calls;
                     let envs: Vec<G> = batch.iter().map(|pending| pending.env).collect();
                     let out = self.evaluator.evaluate(&envs);
-
-                    let mut eval_values: Vec<(f32, f32)> = Vec::with_capacity(batch.len());
-                    for (idx, pending) in batch.iter().enumerate() {
-                        let logits = &out.logits[idx];
-                        let value = out.values[idx];
-                        let health_mu = if self.config.health_enabled {
-                            out.health_expectation(idx).unwrap_or(0.0)
-                        } else {
-                            0.0
-                        };
-                        let mut masks = vec![0; G::action_space_size()];
-                        pending.env.action_masks_into(&mut masks);
-                        let probs = self.compute_probs_from_logits(logits, &masks);
-                        let leaf_idx =
-                            Self::get_node_idx_by_path(&self.arena, self.root_idx, &pending.path);
-                        {
-                            let leaf = self.arena.get_mut(leaf_idx);
-                            leaf.initial_value = value;
-                            leaf.initial_health = health_mu;
-                        }
-                        Self::build_children_from_eval(
-                            &mut self.arena,
-                            leaf_idx,
-                            &pending.env,
-                            &probs,
-                            logits,
-                            value,
-                            health_mu,
-                        );
-                        eval_values.push((value, health_mu));
-                    }
-                    let evals: Vec<(&PendingEval<G>, f32, f32)> = batch
+                    let evals: Vec<(&PendingEval<G>, &[f32], f32, f32)> = batch
                         .iter()
-                        .zip(eval_values)
-                        .map(|(pending, (v, h))| (pending, v, h))
+                        .enumerate()
+                        .map(|(idx, pending)| {
+                            let health_mu = if self.config.health_enabled {
+                                out.health_expectation(idx).unwrap_or(0.0)
+                            } else {
+                                0.0
+                            };
+                            (pending, &out.logits[idx][..], out.values[idx], health_mu)
+                        })
                         .collect();
-                    Self::backprop_evals(&mut self.arena, self.root_idx, &evals);
+                    self.apply_leaf_evals(&evals);
                 }
             }
 
@@ -663,6 +646,12 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         };
 
         // 6. 收集所有数据并返回
+        self.build_result(action)
+    }
+
+    /// 组装搜索结果（根状态/策略/Q 值/访问计数等统一收集点）。
+    /// 根状态缺失（理论上不可能）时返回 None。
+    pub(crate) fn build_result(&self, action: usize) -> Option<MctsSearchResult> {
         let root = self.arena.get(self.root_idx);
         let state = root.state.clone()?;
         let player = root.player;

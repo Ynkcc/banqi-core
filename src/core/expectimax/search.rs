@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::core::env::DarkChessEnv;
+use crate::core::env::Move;
 use crate::core::env::symmetry::{Symmetry, search_group};
 use super::nnue::{NnueAccumulator, NnueEvaluate};
 
@@ -328,10 +329,7 @@ fn negamax(
     let mut ordered = moves;
     ordering::order_moves(env, &mut ordered, depth, cfg, ctx);
     if let Some(tm) = tt_move {
-        if let Some(pos) = ordered.iter().position(|m| m.action == tm) {
-            let m = ordered.remove(pos);
-            ordered.insert(0, m);
-        }
+        move_to_front(&mut ordered, tm);
     }
     if cfg.feat(FEAT_REP) {
         ctx.path.push(key);
@@ -409,10 +407,7 @@ fn best_at_depth(
     }
     ordering::order_moves(env, &mut moves, depth, cfg, ctx);
     if let Some(h) = hint {
-        if let Some(pos) = moves.iter().position(|m| m.action == h) {
-            let m = moves.remove(pos);
-            moves.insert(0, m);
-        }
+        move_to_front(&mut moves, h);
     }
     let mut best_val = -INF;
     let mut best = None;
@@ -430,21 +425,83 @@ fn best_at_depth(
     Ok(best.map(|a| (a, best_val)))
 }
 
+/// 将指定动作的走子移到列表头部（hint / TT best move 置顶）。
+fn move_to_front(moves: &mut Vec<Move>, action: usize) {
+    if let Some(pos) = moves.iter().position(|m| m.action == action) {
+        let m = moves.remove(pos);
+        moves.insert(0, m);
+    }
+}
+
+/// 迭代加深主循环；`stop` 为 Some 时每层开始前检查停止标志。
+///
+/// 返回 `(hint, best_action, best_score, depth_reached)`：
+/// 助线程只需关心 hint，主搜索消费其余字段。
+fn iterative_deepen(
+    env: &DarkChessEnv,
+    acc: &dyn NnueAccumulator,
+    cfg: &SearchConfig,
+    ctx: &mut Ctx,
+    mut hint: Option<usize>,
+    stop: Option<&AtomicBool>,
+) -> (Option<usize>, Option<usize>, f32, i32) {
+    let mut best_action = None;
+    let mut best_score = 0.0f32;
+    let mut depth_reached = 0;
+    for depth in 1..=cfg.max_depth {
+        if stop.is_some_and(|s| s.load(Ordering::Relaxed)) {
+            break;
+        }
+        match best_at_depth(env, acc, depth, cfg, &mut *ctx, hint) {
+            Ok(Some((a, v))) => {
+                hint = Some(a);
+                best_action = Some(a);
+                best_score = v;
+                depth_reached = depth;
+            }
+            _ => break,
+        }
+    }
+    (hint, best_action, best_score, depth_reached)
+}
+
 /// 节点/时间预算驱动的迭代加深 Expectimax 搜索。返回 `None` 表示无合法动作（终局）。
 ///
 /// 强制要求 `cfg.nnue_evaluator` 已加载：未加载权重时直接拒绝搜索（叶评估
 /// 以 NNUE 为唯一来源，不提供规则评估兜底）。
-pub fn search(env: &DarkChessEnv, cfg: &SearchConfig) -> Option<SearchResult> {
-    let Some(nnue) = &cfg.nnue_evaluator else {
-        eprintln!(
-            "❌ Expectimax 搜索需要 NNUE 评估器：请经 ExpectimaxEngine::from_nnue_file 加载 .nnue 权重（SearchConfig.nnue_evaluator = None）"
-        );
+/// 校验 NNUE 评估器已注入且特征维度匹配；失败时打印错误并返回 None。
+fn require_nnue(
+    env: &DarkChessEnv,
+    cfg: &SearchConfig,
+    missing_msg: &str,
+) -> Option<Arc<dyn NnueEvaluate>> {
+    let Some(nnue) = cfg.nnue_evaluator.clone() else {
+        eprintln!("❌ {missing_msg}");
         return None;
     };
-    if let Err(msg) = nnue.validate_feature_dim(env.config.nnue_feature_dim()) {
-        eprintln!("❌ {msg}");
+    if !feature_dim_ok(env, &*nnue) {
         return None;
     }
+    Some(nnue)
+}
+
+/// 特征维度校验，不匹配时打印错误。
+fn feature_dim_ok(env: &DarkChessEnv, nnue: &dyn NnueEvaluate) -> bool {
+    match nnue.validate_feature_dim(env.config.nnue_feature_dim()) {
+        Ok(()) => true,
+        Err(msg) => {
+            eprintln!("❌ {msg}");
+            false
+        }
+    }
+}
+
+pub fn search(env: &DarkChessEnv, cfg: &SearchConfig) -> Option<SearchResult> {
+    require_nnue(
+        env,
+        cfg,
+        "❌ Expectimax 搜索需要 NNUE 评估器：请经 ExpectimaxEngine::from_nnue_file 加载 .nnue 权重（SearchConfig.nnue_evaluator = None）",
+    )?;
     let shared = Arc::new(SharedTT::new(cfg.tt_bits));
     search_with_tt(env, cfg, shared)
 }
@@ -457,8 +514,7 @@ pub fn search_par(env: &DarkChessEnv, cfg: &SearchConfig) -> Option<SearchResult
         return search(env, cfg);
     }
     if let Some(nnue) = &cfg.nnue_evaluator {
-        if let Err(msg) = nnue.validate_feature_dim(env.config.nnue_feature_dim()) {
-            eprintln!("❌ {msg}");
+        if !feature_dim_ok(env, &**nnue) {
             return None;
         }
     }
@@ -488,16 +544,7 @@ pub fn search_par(env: &DarkChessEnv, cfg: &SearchConfig) -> Option<SearchResult
                 if helper_cfg.feat(FEAT_REP) {
                     ctx.path.push(zobrist::zkey(&helper_env));
                 }
-                let mut hint: Option<usize> = None;
-                for depth in 1..=helper_cfg.max_depth {
-                    if stop.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    match best_at_depth(&helper_env, &*root_acc, depth, &helper_cfg, &mut ctx, hint) {
-                        Ok(Some((a, _))) => hint = Some(a),
-                        _ => break,
-                    }
-                }
+                let _ = iterative_deepen(&helper_env, &*root_acc, &helper_cfg, &mut ctx, None, Some(&stop));
             });
         }
         let result = search_with_tt(env, cfg, Arc::clone(&shared));
@@ -512,16 +559,11 @@ fn search_with_tt(
     cfg: &SearchConfig,
     shared: Arc<SharedTT>,
 ) -> Option<SearchResult> {
-    let Some(nnue) = cfg.nnue_evaluator.clone() else {
-        eprintln!(
-            "❌ Expectimax 搜索需要 NNUE 评估器：请经 SearchConfig.nnue_evaluator 注入（当前为 None）"
-        );
-        return None;
-    };
-    if let Err(msg) = nnue.validate_feature_dim(env.config.nnue_feature_dim()) {
-        eprintln!("❌ {msg}");
-        return None;
-    }
+    let nnue = require_nnue(
+        env,
+        cfg,
+        "❌ Expectimax 搜索需要 NNUE 评估器：请经 SearchConfig.nnue_evaluator 注入（当前为 None）",
+    )?;
     let moves = env.generate_moves(env.get_current_player());
     if moves.is_empty() {
         return None;
@@ -531,21 +573,9 @@ fn search_with_tt(
     if cfg.feat(FEAT_REP) {
         ctx.path.push(zobrist::zkey(env));
     }
-    let mut best = moves[0].action;
-    let mut best_score = 0.0f32;
-    let mut hint: Option<usize> = None;
-    let mut depth_reached = 0;
-    for depth in 1..=cfg.max_depth {
-        match best_at_depth(env, &*root_acc, depth, cfg, &mut ctx, hint) {
-            Ok(Some((a, v))) => {
-                best = a;
-                best_score = v;
-                hint = Some(a);
-                depth_reached = depth;
-            }
-            _ => break,
-        }
-    }
+    let (_, best_action, best_score, depth_reached) =
+        iterative_deepen(env, &*root_acc, cfg, &mut ctx, None, None);
+    let best = best_action.unwrap_or(moves[0].action);
     if cfg.tt_sym_probe && cfg.feat(FEAT_TT) {
         let [misses, raw_hits, sym_hits, sym_deep] = ctx.tt.tt_stats();
         let rate = if misses > 0 { sym_hits as f64 / misses as f64 } else { 0.0 };

@@ -30,22 +30,12 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
             let current = arena.get(current_idx);
             match *step {
                 PathStep::Action(action) => {
-                    let next_idx = current
-                        .children
-                        .iter()
-                        .find(|(act, _)| *act == action)
-                        .map(|(_, idx)| *idx)
-                        .expect("Path action not found");
-                    current_idx = next_idx;
+                    current_idx = current.child_idx(action).expect("Path action not found");
                 }
                 PathStep::ChanceOutcome(outcome_id) => {
-                    let next_idx = current
-                        .possible_states
-                        .iter()
-                        .find(|(id, _, _)| *id == outcome_id)
-                        .map(|(_, _, idx)| *idx)
+                    current_idx = current
+                        .outcome_idx(outcome_id)
                         .expect("Path outcome not found");
-                    current_idx = next_idx;
                 }
             }
         }
@@ -95,12 +85,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         let (child_value, child_health, child_player) = match first_step {
             PathStep::Action(action) => {
                 let current = arena.get(node_idx);
-                let child_idx = current
-                    .children
-                    .iter()
-                    .find(|(act, _)| *act == action)
-                    .map(|(_, idx)| *idx)
-                    .expect("Backprop child not found");
+                let child_idx = current.child_idx(action).expect("Backprop child not found");
                 let child_player = arena.get(child_idx).player();
                 let (v, h) = Self::backprop_from_path(
                     arena,
@@ -115,10 +100,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
             PathStep::ChanceOutcome(outcome_id) => {
                 let current = arena.get(node_idx);
                 let child_idx = current
-                    .possible_states
-                    .iter()
-                    .find(|(id, _, _)| *id == outcome_id)
-                    .map(|(_, _, idx)| *idx)
+                    .outcome_idx(outcome_id)
                     .expect("Backprop outcome not found");
                 let child_player = arena.get(child_idx).player();
                 let (v, h) = Self::backprop_from_path(
@@ -222,36 +204,20 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
 
     /// 获取节点的 Q 值（包含 N=0 的初始化规则）
     pub(crate) fn node_q_value(&self, node_idx: usize) -> f32 {
-        let node = self.arena.get(node_idx);
-        if node.visit_count > 0 {
-            return node.value_sum / node.visit_count as f32;
-        }
-
-        // N=0：优先使用已访问子节点的平均值
-        let mut sum = 0.0;
-        let mut count = 0u32;
-        for (_, child_idx) in node.children.iter() {
-            let child = self.arena.get(*child_idx);
-            if child.visit_count > 0 {
-                let child_q = child.value_sum / child.visit_count as f32;
-                let adjusted = value_from_perspective(node.player, child.player, child_q);
-                sum += adjusted;
-                count += 1;
-            }
-        }
-
-        if count > 0 {
-            sum / count as f32
-        } else {
-            node.initial_value
-        }
+        self.node_value_with(node_idx, |n| (n.value_sum, n.initial_value))
     }
 
     /// 获取节点的血量期望 Q 值（包含 N=0 的初始化规则，与 `node_q_value` 并行）。
     pub(crate) fn node_health_value(&self, node_idx: usize) -> f32 {
+        self.node_value_with(node_idx, |n| (n.health_sum, n.initial_health))
+    }
+
+    /// `node_q_value` / `node_health_value` 的统一实现：
+    /// `field` 返回 `(求和字段, N=0 时使用的初始值字段)`。
+    fn node_value_with(&self, node_idx: usize, field: fn(&MctsNode<G>) -> (f32, f32)) -> f32 {
         let node = self.arena.get(node_idx);
         if node.visit_count > 0 {
-            return node.health_sum / node.visit_count as f32;
+            return field(node).0 / node.visit_count as f32;
         }
 
         // N=0：优先使用已访问子节点的平均值
@@ -260,7 +226,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         for (_, child_idx) in node.children.iter() {
             let child = self.arena.get(*child_idx);
             if child.visit_count > 0 {
-                let child_q = child.health_sum / child.visit_count as f32;
+                let child_q = field(child).0 / child.visit_count as f32;
                 let adjusted = value_from_perspective(node.player, child.player, child_q);
                 sum += adjusted;
                 count += 1;
@@ -270,7 +236,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         if count > 0 {
             sum / count as f32
         } else {
-            node.initial_health
+            field(node).1
         }
     }
 

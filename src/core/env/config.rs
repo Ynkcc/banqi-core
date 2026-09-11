@@ -23,41 +23,66 @@ pub const MAX_POSITIONS: usize = 32;
 /// 翻棋概率表最大大小（2 * 7 = 14）。
 pub const MAX_REVEAL_PROBABILITY_SIZE: usize = 14;
 
+const fn sum_counts(counts: &[usize; NUM_PIECE_TYPES_MAX]) -> usize {
+    let mut s = 0usize;
+    let mut i = 0;
+    while i < counts.len() {
+        s += counts[i];
+        i += 1;
+    }
+    s
+}
+
 /// 一局游戏的动作空间计数（翻棋 / 常规移动 / 炮击），由棋盘尺寸决定。
 /// 逻辑必须与 `actions.rs::build_action_lookup_tables` 完全一致。
-pub fn compute_action_counts(rows: usize, cols: usize) -> (usize, usize, usize) {
+pub const fn compute_action_counts(rows: usize, cols: usize) -> (usize, usize, usize) {
     let reveal = rows * cols;
 
     // 常规移动：每格向上下左右四个方向的有效出边数之和
     let mut regular = 0usize;
     let moves = [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)];
-    for r1 in 0..rows {
-        for c1 in 0..cols {
-            for (dr, dc) in moves.iter() {
+    let mut r1 = 0usize;
+    while r1 < rows {
+        let mut c1 = 0usize;
+        while c1 < cols {
+            let mut mi = 0usize;
+            while mi < moves.len() {
+                let (dr, dc) = moves[mi];
                 let r2 = r1 as i32 + dr;
                 let c2 = c1 as i32 + dc;
                 if r2 >= 0 && r2 < rows as i32 && c2 >= 0 && c2 < cols as i32 {
                     regular += 1;
                 }
+                mi += 1;
             }
+            c1 += 1;
         }
+        r1 += 1;
     }
 
     // 炮击：同列/同行且距离 > 1 的 (from, to) 有序对
     let mut cannon = 0usize;
-    for r1 in 0..rows {
-        for c1 in 0..cols {
-            for c2 in 0..cols {
+    let mut r1 = 0usize;
+    while r1 < rows {
+        let mut c1 = 0usize;
+        while c1 < cols {
+            let mut c2 = 0usize;
+            while c2 < cols {
                 if (c1 as i32 - c2 as i32).abs() > 1 {
                     cannon += 1;
                 }
+                c2 += 1;
             }
-            for r2 in 0..rows {
+            let mut r2 = 0usize;
+            while r2 < rows {
                 if (r1 as i32 - r2 as i32).abs() > 1 {
                     cannon += 1;
                 }
+                r2 += 1;
             }
+            c1 += 1;
         }
+        r1 += 1;
     }
 
     (reveal, regular, cannon)
@@ -161,18 +186,22 @@ impl GameConfig {
     }
 }
 
-/// 4x8 暗棋配置（回归基准，行为与原 constants.rs 完全一致）。
-pub fn darkchess_config() -> GameConfig {
-    let rows = 4usize;
-    let cols = 8usize;
+/// 共享配置构建器：派生 total_positions / 动作计数 / 特征维度等统一字段，
+/// 变体只需提供棋盘尺寸与子力/规则差异（特征维度单一真源在此）。
+const fn make_config(
+    rows: usize,
+    cols: usize,
+    active_types: [usize; NUM_PIECE_TYPES_MAX],
+    num_active: usize,
+    piece_counts: [usize; NUM_PIECE_TYPES_MAX],
+    piece_values: [i32; NUM_PIECE_TYPES_MAX],
+    initial_health: i32,
+    initial_revealed_pieces: usize,
+    max_consecutive_moves_for_draw: usize,
+    max_steps_per_episode: usize,
+) -> GameConfig {
     let (reveal, regular, cannon) = compute_action_counts(rows, cols);
-
-    let active_types = [0, 1, 2, 3, 4, 5, 6]; // Soldier..General
-    let piece_counts = [5, 2, 2, 2, 2, 2, 1]; // 兵/炮/马/车/象/士/将
-    let piece_values = [2, 5, 5, 5, 5, 10, 30]; // 与旧硬编码 value() 一致，回归安全
-    let num_active = 7;
-    let total_pieces: usize = piece_counts.iter().sum();
-
+    let total_pieces = sum_counts(&piece_counts);
     GameConfig {
         rows,
         cols,
@@ -182,10 +211,10 @@ pub fn darkchess_config() -> GameConfig {
         piece_counts,
         total_pieces_per_player: total_pieces,
         piece_values,
-        initial_health: 60,
-        initial_revealed_pieces: 4,
-        max_consecutive_moves_for_draw: 24,
-        max_steps_per_episode: 100,
+        initial_health,
+        initial_revealed_pieces,
+        max_consecutive_moves_for_draw,
+        max_steps_per_episode,
         reveal_actions_count: reveal,
         regular_move_actions_count: regular,
         cannon_attack_actions_count: cannon,
@@ -195,6 +224,22 @@ pub fn darkchess_config() -> GameConfig {
         resnet_scalar_feature_count: 3 + 4 * total_pieces,
         reveal_probability_size: 2 * num_active,
     }
+}
+
+/// 4x8 暗棋配置（回归基准，行为与原 constants.rs 完全一致）。
+pub const fn darkchess_config() -> GameConfig {
+    make_config(
+        4,
+        8,
+        [0, 1, 2, 3, 4, 5, 6],                    // Soldier..General
+        7,
+        [5, 2, 2, 2, 2, 2, 1],                    // 兵/炮/马/车/象/士/将
+        [2, 5, 5, 5, 5, 10, 30],                  // 与旧硬编码 value() 一致，回归安全
+        60,
+        4,
+        24,
+        100,
+    )
 }
 
 /// 4x4 暗棋配置：7 类棋子全激活，每方 8 子，血量上限 = 60（由变体指定）。
@@ -208,76 +253,34 @@ pub fn darkchess_config() -> GameConfig {
 /// | 象   | 10   | 1      |
 /// | 士   | 20   | 1      |
 /// | 将   | 30   | 1      |
-pub fn game_4x4_config() -> GameConfig {
-    let rows = 4usize;
-    let cols = 4usize;
-    let (reveal, regular, cannon) = compute_action_counts(rows, cols);
-
-    let active_types = [0, 1, 2, 3, 4, 5, 6]; // Soldier..General
-    let piece_counts = [2usize, 1, 1, 1, 1, 1, 1]; // 兵2 炮1 马1 车1 象1 士1 将1
-    let piece_values = [4, 10, 10, 10, 10, 20, 30]; // 变体自定义分值
-    let num_active = 7;
-    let total_pieces: usize = piece_counts.iter().sum();
-
-    GameConfig {
-        rows,
-        cols,
-        total_positions: rows * cols,
-        num_active,
-        active_types,
-        piece_counts,
-        total_pieces_per_player: total_pieces,
-        piece_values,
-        initial_health: 60,
-        initial_revealed_pieces: 8,
-        max_consecutive_moves_for_draw: 16, // 未吃子步数为 16 时强制判和
-        max_steps_per_episode: 48,
-        reveal_actions_count: reveal,
-        regular_move_actions_count: regular,
-        cannon_attack_actions_count: cannon,
-        action_space_size: reveal + regular + cannon,
-        resnet_board_channels: 2 * num_active + 2,
-        // 3 个全局标量 (MoveCount, MyHP, OppHP) + 4 个计数向量 (存活×2 + 暗子×2)
-        resnet_scalar_feature_count: 3 + 4 * total_pieces,
-        reveal_probability_size: 2 * num_active,
-    }
+pub const fn game_4x4_config() -> GameConfig {
+    make_config(
+        4,
+        4,
+        [0, 1, 2, 3, 4, 5, 6],                    // Soldier..General
+        7,
+        [2, 1, 1, 1, 1, 1, 1],                    // 兵2 炮1 马1 车1 象1 士1 将1
+        [4, 10, 10, 10, 10, 20, 30],              // 变体自定义分值
+        60,
+        8,
+        16,                                       // 未吃子步数为 16 时强制判和
+        48,
+    )
 }
 
 /// 4x2 迷你暗棋配置：仅 兵/炮/士/将，每方各 1 子，血量上限 = 2+5+10+30 = 47。
 /// 变体规则：连续未吃子步数达到 8 则强制判和。
-pub fn mini_config() -> GameConfig {
-    let rows = 4usize;
-    let cols = 2usize;
-    let (reveal, regular, cannon) = compute_action_counts(rows, cols);
-
-    // 激活类型：Soldier(0), Cannon(1), Advisor(5), General(6)，紧凑索引 0..4
-    let active_types = [0usize, 1, 5, 6, 0, 0, 0];
-    let num_active = 4;
-    // 每方：兵1 炮1 马0 车0 象0 士1 将1 = 4
-    let piece_counts = [1usize, 1, 0, 0, 0, 1, 1];
-    let piece_values = [2, 5, 0, 0, 0, 10, 30]; // 与旧硬编码 value() 一致，回归安全
-    let total_pieces: usize = piece_counts.iter().sum();
-
-    GameConfig {
-        rows,
-        cols,
-        total_positions: rows * cols,
-        num_active,
-        active_types,
-        piece_counts,
-        total_pieces_per_player: total_pieces,
-        piece_values,
-        initial_health: 47,
-        initial_revealed_pieces: 2,
-        max_consecutive_moves_for_draw: 8, // 未吃子步数为 8 时强制判和
-        max_steps_per_episode: 30,
-        reveal_actions_count: reveal,
-        regular_move_actions_count: regular,
-        cannon_attack_actions_count: cannon,
-        action_space_size: reveal + regular + cannon,
-        resnet_board_channels: 2 * num_active + 2,
-        // 3 个全局标量 (MoveCount, MyHP, OppHP) + 4 个计数向量 (存活×2 + 暗子×2)
-        resnet_scalar_feature_count: 3 + 4 * total_pieces,
-        reveal_probability_size: 2 * num_active,
-    }
+pub const fn mini_config() -> GameConfig {
+    make_config(
+        4,
+        2,
+        [0, 1, 5, 6, 0, 0, 0],                    // Soldier/Cannon/Advisor/General
+        4,
+        [1, 1, 0, 0, 0, 1, 1],                    // 每方：兵1 炮1 士1 将1
+        [2, 5, 0, 0, 0, 10, 30],                  // 与旧硬编码 value() 一致，回归安全
+        47,
+        2,
+        8,                                        // 未吃子步数为 8 时强制判和
+        30,
+    )
 }

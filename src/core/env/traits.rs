@@ -13,8 +13,6 @@
 use super::board::DarkChessEnv;
 use super::config::GameConfig;
 use super::constants::MAX_STEPS_PER_EPISODE;
-use super::variants::game4x4::Game4x4Env;
-use super::variants::mini_darkchess::MiniDarkChessEnv;
 use super::types::{ResNetObservation, Piece, Player};
 
 /// 泛型游戏环境：Gumbel MCTS 对其施加的全部约束。
@@ -38,8 +36,22 @@ pub trait GameEnv: Copy + Clone + Send + Sync + 'static {
     /// `Some(0)` = 平局，`None` = 未结束。
     fn step(&mut self, action: usize) -> Result<(f32, bool, bool, Option<i32>), String>;
 
-    /// 获取当前观测（神经网络输入）
-    fn get_resnet_state(&self) -> ResNetObservation;
+    /// 获取当前观测（神经网络输入）。
+    ///
+    /// 默认实现：调用 `encode_resnet_features_flat_into` 后按
+    /// `(RESNET_BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS)` 重塑。
+    fn get_resnet_state(&self) -> ResNetObservation {
+        let (ch, rows, cols) = (Self::RESNET_BOARD_CHANNELS, Self::BOARD_ROWS, Self::BOARD_COLS);
+        let mut board_data = Vec::with_capacity(ch * rows * cols);
+        let mut scalars_data = Vec::with_capacity(Self::RESNET_SCALAR_FEATURE_COUNT);
+        self.encode_resnet_features_flat_into(&mut board_data, &mut scalars_data);
+        let board = ndarray::Array3::from_shape_vec((ch, rows, cols), board_data)
+            .expect("Failed to reshape board array");
+        ResNetObservation {
+            board,
+            scalars: ndarray::Array1::from_vec(scalars_data),
+        }
+    }
 
     /// 终局检测：`(terminated, truncated, winner)`
     fn check_game_over_conditions(&self) -> (bool, bool, Option<i32>);
@@ -137,10 +149,6 @@ impl GameEnv for DarkChessEnv {
         DarkChessEnv::step(self, action, None)
     }
 
-    fn get_resnet_state(&self) -> ResNetObservation {
-        DarkChessEnv::get_resnet_state(self)
-    }
-
     fn check_game_over_conditions(&self) -> (bool, bool, Option<i32>) {
         DarkChessEnv::check_game_over_conditions(self)
     }
@@ -191,136 +199,5 @@ impl GameEnv for DarkChessEnv {
     }
 }
 
-// ============================================================================
-// 4x4 暗棋实现
-// ============================================================================
-
-impl GameEnv for Game4x4Env {
-    fn action_space_size() -> usize {
-        Game4x4Env::action_space_size()
-    }
-
-    fn get_current_player(&self) -> Player {
-        Game4x4Env::get_current_player(self)
-    }
-
-    fn action_masks_into(&self, masks: &mut [i32]) {
-        Game4x4Env::action_masks_into(self, masks);
-    }
-
-    fn step(&mut self, action: usize) -> Result<(f32, bool, bool, Option<i32>), String> {
-        Game4x4Env::step(self, action)
-    }
-
-    fn get_resnet_state(&self) -> ResNetObservation {
-        Game4x4Env::get_resnet_state(self)
-    }
-
-    fn check_game_over_conditions(&self) -> (bool, bool, Option<i32>) {
-        Game4x4Env::check_game_over_conditions(self)
-    }
-
-    fn max_steps() -> usize {
-        Game4x4Env::max_steps()
-    }
-
-    const RESNET_BOARD_CHANNELS: usize = 16; // 2*7(全激活) + 2
-    const BOARD_ROWS: usize = 4;
-    const BOARD_COLS: usize = 4;
-    const RESNET_SCALAR_FEATURE_COUNT: usize = 35; // 3 + 4*8
-
-    fn encode_resnet_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) {
-        Game4x4Env::encode_resnet_features_flat_into(self, board_data, scalars_data);
-    }
-
-    fn is_chance_action(&self, action: usize) -> bool {
-        Game4x4Env::is_chance_action(self, action)
-    }
-
-    fn chance_outcomes(&self, action: usize) -> Vec<(usize, f32, Self)> {
-        Game4x4Env::chance_outcomes(self, action)
-    }
-
-    fn step_outcome_id(&self, action: usize) -> Option<usize> {
-        Game4x4Env::step_outcome_id(self, action)
-    }
-
-    fn terminal_health_diff_red(&self) -> Option<f32> {
-        self.inner.terminal_health_diff_red()
-    }
-
-    fn terminal_health_diff_red_int(&self) -> Option<i32> {
-        self.inner.terminal_health_diff_red_int()
-    }
-
-    fn health_diff_scale(&self) -> f32 {
-        self.inner.health_diff_scale()
-    }
-}
-
-// ============================================================================
-// 4x2 迷你暗棋实现
-// ============================================================================
-
-impl GameEnv for MiniDarkChessEnv {
-    fn action_space_size() -> usize {
-        MiniDarkChessEnv::action_space_size()
-    }
-
-    fn get_current_player(&self) -> Player {
-        MiniDarkChessEnv::get_current_player(self)
-    }
-
-    fn action_masks_into(&self, masks: &mut [i32]) {
-        MiniDarkChessEnv::action_masks_into(self, masks);
-    }
-
-    fn step(&mut self, action: usize) -> Result<(f32, bool, bool, Option<i32>), String> {
-        MiniDarkChessEnv::step(self, action)
-    }
-
-    fn get_resnet_state(&self) -> ResNetObservation {
-        MiniDarkChessEnv::get_resnet_state(self)
-    }
-
-    fn check_game_over_conditions(&self) -> (bool, bool, Option<i32>) {
-        MiniDarkChessEnv::check_game_over_conditions(self)
-    }
-
-    fn max_steps() -> usize {
-        MiniDarkChessEnv::max_steps()
-    }
-
-    const RESNET_BOARD_CHANNELS: usize = 10;
-    const BOARD_ROWS: usize = 4;
-    const BOARD_COLS: usize = 2;
-    const RESNET_SCALAR_FEATURE_COUNT: usize = 19; // 3 + 4*4
-
-    fn encode_resnet_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) {
-        MiniDarkChessEnv::encode_resnet_features_flat_into(self, board_data, scalars_data);
-    }
-
-    fn is_chance_action(&self, action: usize) -> bool {
-        MiniDarkChessEnv::is_chance_action(self, action)
-    }
-
-    fn chance_outcomes(&self, action: usize) -> Vec<(usize, f32, Self)> {
-        MiniDarkChessEnv::chance_outcomes(self, action)
-    }
-
-    fn step_outcome_id(&self, action: usize) -> Option<usize> {
-        MiniDarkChessEnv::step_outcome_id(self, action)
-    }
-
-    fn terminal_health_diff_red(&self) -> Option<f32> {
-        self.inner.terminal_health_diff_red()
-    }
-
-    fn terminal_health_diff_red_int(&self) -> Option<i32> {
-        self.inner.terminal_health_diff_red_int()
-    }
-
-    fn health_diff_scale(&self) -> f32 {
-        self.inner.health_diff_scale()
-    }
-}
+// 4x4 暗棋 / 4x2 迷你暗棋的 `GameEnv` 委托实现
+// 由 `variants::impl_darkchess_variant!` 宏统一生成（见 variants/mod.rs）。

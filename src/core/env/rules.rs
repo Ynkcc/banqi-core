@@ -226,15 +226,9 @@ impl DarkChessEnv {
                         continue;
                     }
 
-                    let screen_sq = match dir {
-                        0 | 2 => msb_index(blockers), // UP | LEFT
-                        _ => Some(trailing_zeros(blockers)),
-                    };
-
-                    if screen_sq.is_none() {
+                    let Some(screen_sq) = first_blocker(dir, blockers) else {
                         continue;
-                    }
-                    let screen_sq = screen_sq.unwrap();
+                    };
 
                     let after_screen_ray = rays[dir][screen_sq];
                     let targets = after_screen_ray & all_pieces_bb;
@@ -243,15 +237,9 @@ impl DarkChessEnv {
                         continue;
                     }
 
-                    let target_sq = match dir {
-                        0 | 2 => msb_index(targets),
-                        _ => Some(trailing_zeros(targets)),
-                    };
-
-                    if target_sq.is_none() {
+                    let Some(target_sq) = first_blocker(dir, targets) else {
                         continue;
-                    }
-                    let target_sq = target_sq.unwrap();
+                    };
 
                     if ((ull(target_sq)) & valid_cannon_targets) != 0 {
                         if let Some(&idx) =
@@ -263,6 +251,15 @@ impl DarkChessEnv {
                 }
             }
         }
+    }
+}
+
+/// 炮击路径上距离 from 最近的一个阻挡子：
+/// UP/LEFT（dir 0|2）沿高位方向取 msb，DOWN/RIGHT 取 lsb。
+fn first_blocker(dir: usize, bb: u64) -> Option<usize> {
+    match dir {
+        0 | 2 => msb_index(bb),
+        _ => Some(trailing_zeros(bb)),
     }
 }
 

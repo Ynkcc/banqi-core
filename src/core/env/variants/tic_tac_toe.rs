@@ -8,10 +8,8 @@
 // - 玩家视角与暗棋一致：红方 Red=1 先手执 X，黑方 Black=-1 后手执 O。
 // - 特征编码遵循暗棋 features.rs 约定：通道0=当前方棋子，通道1=对手棋子。
 
-use ndarray::{Array1, Array3};
-
 use crate::core::env::traits::GameEnv;
-use crate::core::env::types::{ResNetObservation, Player};
+use crate::core::env::types::Player;
 
 /// 井字棋动作空间大小（= 格子数）
 pub const TTT_ACTION_SPACE_SIZE: usize = 9;
@@ -145,18 +143,6 @@ impl GameEnv for TicTacToeEnv {
         // 语义一致，使 minimax / MCTS 的视角取反逻辑在终局节点上依然成立。
         self.current_player = self.current_player.opposite();
         Ok((0.0, terminated, false, winner))
-    }
-
-    fn get_resnet_state(&self) -> ResNetObservation {
-        let mut board_data = Vec::with_capacity(TTT_RESNET_BOARD_CHANNELS * TTT_ACTION_SPACE_SIZE);
-        self.encode_into(&mut board_data);
-        let board =
-            Array3::from_shape_vec((TTT_RESNET_BOARD_CHANNELS, TTT_BOARD_ROWS, TTT_BOARD_COLS), board_data)
-                .expect("Failed to reshape ttt board array");
-        ResNetObservation {
-            board,
-            scalars: Array1::from_vec(Vec::new()),
-        }
     }
 
     fn check_game_over_conditions(&self) -> (bool, bool, Option<i32>) {

@@ -39,10 +39,11 @@ pub(super) fn terminal_info(env: &DarkChessEnv, moves: &[Move]) -> Option<i32> {
 }
 
 /// 吃子目标的棋子价值（m 为目标明子的吃子/炮击）。
+/// 使用 config 的 piece_values（变体分值），与运行时扣血一致。
 #[inline]
 pub(super) fn victim_value(env: &DarkChessEnv, m: &Move) -> i32 {
     if let SlotKind::Revealed(p) = slot_kind(&env.get_board_slots()[m.to]) {
-        p.piece_type.value()
+        env.config.piece_values[p.piece_type as usize]
     } else {
         0
     }
@@ -61,7 +62,7 @@ pub(super) fn order_key(env: &DarkChessEnv, m: &Move, depth: i32, ctx: &Ctx) -> 
     if m.is_capture {
         let victim = victim_value(env, m);
         let attacker = if let SlotKind::Revealed(p) = slot_kind(&env.get_board_slots()[m.from]) {
-            p.piece_type.value()
+            env.config.piece_values[p.piece_type as usize]
         } else {
             0
         };

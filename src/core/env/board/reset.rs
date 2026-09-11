@@ -5,28 +5,8 @@ use super::*;
 
 impl DarkChessEnv {
     pub(crate) fn reset_internal_state(&mut self) {
-        self.board = [Slot::Empty; MAX_POSITIONS];
-
-        self.piece_bitboards = [[0; NUM_PIECE_TYPES_MAX]; 2];
-        self.revealed_bitboards = [0; 2];
-
-        self.hidden_bitboard = 0;
-        self.empty_bitboard = 0;
-
-        // 重置阵亡计数，无需清空 pool 内容，依靠 count 即可
-        self.dead_pieces_count = [0; 2];
-        self.dead_piece_counts_by_type = [[0; NUM_PIECE_TYPES_MAX]; 2];
-
-        self.scores = [self.config.initial_health, self.config.initial_health];
-
-        self.current_player = Player::Red;
-        self.move_counter = 0;
-        self.total_step_counter = 0;
-        self.last_action = -1;
-
-        self.hidden_pieces_count = 0;
-        self.reveal_probabilities = [0.0; MAX_REVEAL_PROBABILITY_SIZE];
-        self.last_revealed_piece = None;
+        let (config, seed, true_board) = (self.config, self.seed, self.true_board);
+        *self = Self::fresh_with(config, [Slot::Empty; MAX_POSITIONS], seed, true_board);
     }
 
     /// 初始化棋盘布局 (Shuffle Bag Model)

@@ -38,20 +38,6 @@ impl PieceType {
             _ => panic!("非法棋子类型索引: {}", idx),
         }
     }
-
-    /// 默认分值（4x8 基准）。运行时吃子扣血应使用 `GameConfig::piece_values`
-    /// （变体可配置，如 4x4 兵4/炮10/马10/车10/象10/士20/将30）。
-    pub fn value(&self) -> i32 {
-        match self {
-            PieceType::Soldier => 2,
-            PieceType::Cannon => 5,
-            PieceType::Horse => 5,
-            PieceType::Chariot => 5,
-            PieceType::Elephant => 5,
-            PieceType::Advisor => 10,
-            PieceType::General => 30,
-        }
-    }
 }
 
 /// 一条结构化走法/翻棋动作（由动作掩码派生，供搜索排序等使用）。

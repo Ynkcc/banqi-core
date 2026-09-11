@@ -161,27 +161,44 @@ impl<G: GameEnv> MctsNode<G> {
         self.player
     }
 
+    /// 查找指定动作的子节点索引
+    pub fn child_idx(&self, action: usize) -> Option<usize> {
+        self.children
+            .iter()
+            .find(|(act, _)| *act == action)
+            .map(|(_, idx)| *idx)
+    }
+
+    /// 查找指定结果 ID 的机会节点子分支索引
+    pub fn outcome_idx(&self, outcome_id: usize) -> Option<usize> {
+        self.possible_states
+            .iter()
+            .find(|(id, _, _)| *id == outcome_id)
+            .map(|(_, _, idx)| *idx)
+    }
+
     /// 计算当前节点的平均 Q 值 (动作价值)
     ///
     /// 公式: Q = W / N
     /// 如果访问次数为 0，则返回 0.0。
     pub fn q_value(&self) -> f32 {
-        if self.visit_count == 0 {
-            0.0
-        } else {
-            self.value_sum / self.visit_count as f32
-        }
+        avg(self.value_sum, self.visit_count)
     }
 
     /// 计算当前节点的平均血量期望 (动作价值)
     ///
     /// 公式: Q_hp = W_hp / N；访问次数为 0 时返回 0.0。
     pub fn q_health_value(&self) -> f32 {
-        if self.visit_count == 0 {
-            0.0
-        } else {
-            self.health_sum / self.visit_count as f32
-        }
+        avg(self.health_sum, self.visit_count)
+    }
+}
+
+/// W / N；N = 0 时返回 0.0。
+fn avg(sum: f32, count: u32) -> f32 {
+    if count == 0 {
+        0.0
+    } else {
+        sum / count as f32
     }
 }
 

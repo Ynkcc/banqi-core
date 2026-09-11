@@ -87,11 +87,17 @@ impl DarkChessEnv {
         Self::with_config(game_4x4_config())
     }
 
-    /// 以指定配置创建环境（初始化并复位）。
-    pub fn with_config(config: GameConfig) -> Self {
-        let mut env = Self {
+    /// 以初始状态构造环境：config / board / seed / true_board 由调用方指定，
+    /// 其余对局状态字段统一置默认（scores 取 config.initial_health）。
+    pub(crate) fn fresh_with(
+        config: GameConfig,
+        board: [Slot; MAX_POSITIONS],
+        seed: Option<u64>,
+        true_board: Option<[Piece; MAX_POSITIONS]>,
+    ) -> Self {
+        Self {
             config,
-            board: [Slot::Empty; MAX_POSITIONS],
+            board,
             current_player: Player::Red,
             move_counter: 0,
             total_step_counter: 0,
@@ -105,17 +111,26 @@ impl DarkChessEnv {
             dead_pieces_count: [0; 2],
             dead_piece_counts_by_type: [[0; NUM_PIECE_TYPES_MAX]; 2],
 
-            scores: [0; 2],
+            scores: [config.initial_health; 2],
             last_action: -1,
 
             hidden_pieces_pool: [Piece::default(); MAX_POSITIONS],
             hidden_pieces_count: 0,
 
             reveal_probabilities: [0.0; MAX_REVEAL_PROBABILITY_SIZE],
-            seed: None,
-            true_board: None,
+            seed,
+            true_board,
             last_revealed_piece: None,
-        };
+        }
+    }
+
+    fn fresh(config: GameConfig, board: [Slot; MAX_POSITIONS]) -> Self {
+        Self::fresh_with(config, board, None, None)
+    }
+
+    /// 以指定配置创建环境（初始化并复位）。
+    pub fn with_config(config: GameConfig) -> Self {
+        let mut env = Self::fresh(config, [Slot::Empty; MAX_POSITIONS]);
 
         // 预热动作表与射线表（按 config 分键缓存）
         action_lookup_tables(&config);
@@ -136,28 +151,8 @@ impl DarkChessEnv {
         current_player: Player,
         config: GameConfig,
     ) -> Self {
-        let mut env = Self {
-            config,
-            board,
-            current_player,
-            move_counter: 0,
-            total_step_counter: 0,
-            piece_bitboards: [[0; NUM_PIECE_TYPES_MAX]; 2],
-            revealed_bitboards: [0; 2],
-            hidden_bitboard: 0,
-            empty_bitboard: 0,
-            dead_pieces_pool: [[PieceType::default(); MAX_PIECES_PER_PLAYER]; 2],
-            dead_pieces_count: [0; 2],
-            dead_piece_counts_by_type: [[0; NUM_PIECE_TYPES_MAX]; 2],
-            scores: [config.initial_health, config.initial_health],
-            last_action: -1,
-            hidden_pieces_pool: [Piece::default(); MAX_POSITIONS],
-            hidden_pieces_count: 0,
-            reveal_probabilities: [0.0; MAX_REVEAL_PROBABILITY_SIZE],
-            seed: None,
-            true_board: None,
-            last_revealed_piece: None,
-        };
+        let mut env = Self::fresh(config, board);
+        env.current_player = current_player;
         for (sq, slot) in board.iter().enumerate().take(config.total_positions) {
             match slot {
                 Slot::Empty => env.empty_bitboard |= ull(sq),

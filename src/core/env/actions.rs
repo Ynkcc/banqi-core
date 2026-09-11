@@ -1,6 +1,7 @@
+use super::cache::{cached, global_cache};
 use super::config::GameConfig;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 
 // ==============================================================================
 // --- 动作预计算表（config 驱动） ---
@@ -29,23 +30,11 @@ fn table_key(cfg: &GameConfig) -> u64 {
     ((cfg.rows as u64) << 16) | (cfg.cols as u64)
 }
 
-static ACTION_TABLE_CACHE: OnceLock<Mutex<HashMap<u64, Arc<ActionLookupTables>>>> = OnceLock::new();
-
-fn table_cache() -> &'static Mutex<HashMap<u64, Arc<ActionLookupTables>>> {
-    ACTION_TABLE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
+global_cache!(ACTION_TABLE_CACHE, table_cache, ActionLookupTables);
 
 pub fn action_lookup_tables(cfg: &GameConfig) -> Arc<ActionLookupTables> {
     let key = table_key(cfg);
-    {
-        let cache = table_cache().lock().unwrap();
-        if let Some(t) = cache.get(&key) {
-            return Arc::clone(t);
-        }
-    }
-    let tables = build_action_lookup_tables(cfg);
-    let mut cache = table_cache().lock().unwrap();
-    cache.entry(key).or_insert_with(|| Arc::new(tables)).clone()
+    cached(table_cache(), key, || build_action_lookup_tables(cfg))
 }
 
 fn build_action_lookup_tables(cfg: &GameConfig) -> ActionLookupTables {
@@ -112,6 +101,15 @@ fn build_action_lookup_tables(cfg: &GameConfig) -> ActionLookupTables {
             }
         }
     }
+
+    // 一致性校验：动作表与 config 的动作计数（compute_action_counts 派生）必须一致。
+    debug_assert_eq!(
+        action_to_coords.len(),
+        cfg.action_space_size,
+        "动作表长度与 config.action_space_size 不一致 (rows={}, cols={})",
+        cfg.rows,
+        cfg.cols
+    );
 
     ActionLookupTables {
         action_to_coords,

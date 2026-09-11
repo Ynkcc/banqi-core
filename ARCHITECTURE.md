@@ -27,6 +27,7 @@
 | 2026-09-11 | 首次成文，基于当前 `src/core` 快照梳理模块划分、关键类型、入口与数据流 | 全库 |
 | 2026-09-11 | `DarkChessEnv` 新增只读访问器 `last_revealed_piece()`（NNUE 增量差分等上层 crate 消费） | `env/board/struct_def.rs` |
 | 2026-09-11 | 新增 `env::variants::CurriculumEnv` trait（`with_initial_revealed(n)`，覆盖初始预翻棋子数；实现于 DarkChessEnv / Game4x4Env / MiniDarkChessEnv，棋盘/动作空间/特征维度不变，服务课程学习） | `env/variants/mod.rs` |
+| 2026-09-11 | 去重重构：①新增 `env/cache.rs` 泛型 `OnceLock` 缓存（`global_cache!` / `cached`），actions/bitboard/symmetry 四套缓存样板收敛；②变体包装（Game4x4Env / MiniDarkChessEnv）的常量、固有方法与 `GameEnv` 委托实现由 `variants::impl_darkchess_variant!` 宏统一生成，变体常量改由 const fn 配置函数推导；③`GameEnv::get_resnet_state` 提供基于 `encode_resnet_features_flat_into` 的默认实现，删除 DarkChessEnv / TicTacToeEnv 重复 impl；④`config.rs` 提取共享构建器 `make_config`，三变体配置收敛；⑤MCTS run 与 batched 双路径共享根准备（`refresh_root_action_mask` / `root_logits` / `sample_root_candidates`）、根扩展（`apply_root_eval`）、叶回填（`apply_leaf_evals`）与结果组装（`build_result`），`MctsNode` 新增 `child_idx` / `outcome_idx` 查找方法；⑥expectimax 提取 `require_nnue` / `feature_dim_ok` / `move_to_front` / `iterative_deepen`；⑦`PieceType::value()` 删除，走子排序统一使用 `GameConfig.piece_values`（修复 4x4 变体下排序分值与扣血不一致） | 全库（env / mcts / expectimax） |
 
 ---
 
@@ -58,10 +59,11 @@ src/
     env/                      # 游戏环境（规则 / 状态 / 走子 / 特征 / 变体）
       mod.rs                  # 声明 + 公共 re-export
       types.rs                # PieceType / Player / Piece / Slot / Move / ResNetObservation
-      config.rs               # GameConfig + 各变体配置 + 动作计数 + NNUE 布局推导
+      config.rs               # GameConfig + 各变体配置（const fn + 共享构建器 make_config）+ 动作计数 + NNUE 布局推导
       constants.rs            # 4x8 编译期常量（回归基准）
-      traits.rs               # GameEnv trait + 各环境实现 + 机会节点扩展点
-      rules.rs                # 终局判定 + 动作掩码生成 + 结构化走子生成
+      cache.rs                # 泛型 OnceLock 缓存：global_cache! 宏 + cached() 查/建/插
+      traits.rs               # GameEnv trait + DarkChessEnv 实现 + 机会节点扩展点
+      rules.rs                # 终局判定 + 动作掩码生成 + 结构化走子生成 + first_blocker
       features.rs             # StateView 投影 + ResNet 稠密特征 + NNUE 稀疏特征
       actions.rs              # 动作查找表（config 驱动 + 全局缓存）
       bitboard.rs             # 位棋盘辅助 + 射线表（config 驱动 + 缓存）
@@ -75,8 +77,8 @@ src/
         accessors.rs          # 公共访问器 + pub(crate) 内部辅助
         tests.rs              # 单元测试
       variants/
-        mod.rs                # 变体 re-export
-        game4x4.rs            # 4x4 暗棋（7 类全激活，每方 8 子）
+        mod.rs                # 变体 re-export + impl_darkchess_variant! 统一实现宏 + CurriculumEnv
+        game4x4.rs            # 4x4 暗棋（7 类全激活，每方 8 子；仅结构体 + 宏调用）
         mini_darkchess.rs     # 4x2 迷你暗棋（兵/炮/士/将，每方 4 子）
         tic_tac_toe.rs        # 井字棋（MCTS 泛型验证用，无机会节点）
     mcts/                     # Gumbel AlphaZero MCTS（泛型：G: GameEnv, E: Evaluator<G>）
@@ -168,7 +170,7 @@ pub mod mcts;
 
 - `GameConfig` 是 `Copy` 纯数据，随环境携带，决定"活跃范围"。
 - `DarkChessEnv` 内部**所有定长数组按最大上界分配**（`MAX_POSITIONS = 32`、`NUM_PIECE_TYPES_MAX = 7`、`MAX_PIECES_PER_PLAYER = 16`、`MAX_REVEAL_PROBABILITY_SIZE = 14`），实际使用部分由 `config` 裁剪 —— 这是环境保持 `Copy`（供 MCTS 以值语义保存快照）的关键约束。
-- 变体（4x4 / 4x2）仅复用 `DarkChessEnv` 内核 + 不同 `GameConfig`，包装类型只提供不同的 `GameEnv` 关联常量。
+- 变体（4x4 / 4x2）仅复用 `DarkChessEnv` 内核 + 不同 `GameConfig`：包装类型只定义 `struct X { inner: DarkChessEnv }`，其模块级常量、固有委托方法、`Default` 与 `GameEnv` 委托实现全部由 `variants::impl_darkchess_variant!` 宏生成；常量单一真源为变体的 const fn 配置函数（如 `game_4x4_config()`）。
 
 ### 4.2 变体与动作空间
 
@@ -186,7 +188,7 @@ pub mod mcts;
 `env::traits::GameEnv` 是 MCTS 泛型化的唯一约束，要求 `Copy + Clone + Send + Sync + 'static`：
 
 - 关联常量：`RESNET_BOARD_CHANNELS` / `BOARD_ROWS` / `BOARD_COLS` / `RESNET_SCALAR_FEATURE_COUNT`；
-- 核心方法：`action_space_size()`、`get_current_player()`、`action_masks_into()`、`step()`、`get_resnet_state()`、`check_game_over_conditions()`、`encode_resnet_features_flat_into()`；
+- 核心方法：`action_space_size()`、`get_current_player()`、`action_masks_into()`、`step()`、`check_game_over_conditions()`、`encode_resnet_features_flat_into()`；`get_resnet_state()` 为默认实现（调用 `encode_resnet_features_flat_into` 后按关联常量重塑）；
 - **机会节点扩展点**（暗棋特有，默认关闭）：`is_chance_action()` / `chance_outcomes()` / `step_outcome_id()`。`DarkChessEnv`、`Game4x4Env`、`MiniDarkChessEnv` 覆盖实现；`TicTacToeEnv` 保持默认（无机会节点）；
 - 终局血量辅助：`terminal_health_diff_red()` / `terminal_health_diff_red_int()` / `health_diff_scale()`，供 MCTS 血量复合效用使用。
 
@@ -223,7 +225,8 @@ pub mod mcts;
 
 ### 4.7 预计算表与缓存
 
-- `actions.rs`：`ACTION_TABLE_CACHE`（`OnceLock<Mutex<HashMap<u64, Arc<ActionLookupTables>>>>`），键为 `(rows, cols)`；`action_to_coords` / `coords_to_action`（`pack_coords` 编解码）。
+- **统一缓存设施** `env/cache.rs`：`global_cache!(CACHE, getter, ValType)` 声明 `OnceLock<Mutex<HashMap<u64, Arc<T>>>>` 全局缓存，`cached(cache, key, build)` 完成查/建/插（构建在锁外进行）。
+- `actions.rs`：`ACTION_TABLE_CACHE`，键为 `(rows, cols)`；`action_to_coords` / `coords_to_action`（`pack_coords` 编解码）；构建末尾 `debug_assert` 校验动作表长度与 `config.action_space_size` 一致。
 - `bitboard.rs`：`RAY_CACHE`，键为 `(rows, cols)`；`ray_attacks` 提供四方向射线，用于炮击。
 - `symmetry.rs`：`PERM_CACHE` / `SQMAP_CACHE`，`sq_map` / `action_permutation` / `transform_board_flat` / `transform_action`，语义与 Python `data_augmentation.py` 对齐。
 - 所有缓存均以 `(rows, cols)` 分键，支持多变体在同进程共存。
@@ -255,7 +258,7 @@ Gumbel AlphaZero 风格的 MCTS，泛型化于 `G: GameEnv`，通过 `Evaluator<
 
 | 文件 | 职责 |
 |------|------|
-| `search.rs` | 搜索器结构体 + 主循环（`run` / `select_path_collect` / `expand_root` / `step_next` / `completed_q` / `completed_utility`） |
+| `search.rs` | 搜索器结构体 + 主循环（`run` / `select_path_collect` / `expand_root` / `step_next` / `completed_q` / `completed_utility`）；run 与 batched 共用的根准备 / 回填 / 结果组装（`refresh_root_action_mask` / `root_logits` / `sample_root_candidates` / `apply_root_eval` / `apply_leaf_evals` / `build_result`） |
 | `tree.rs` | 树构建与回溯（`build_children_from_eval` / `expand_chance_node` / `backprop_from_path` / `backprop_evals` / `node_q_value` / `node_utility_value`） |
 | `policy.rs` | 只读策略计算（`compute_probs_from_logits` / `get_root_probabilities` / `get_improved_policy`） |
 | `sampling.rs` | Gumbel Top-K / 机会结果采样 |
@@ -309,7 +312,7 @@ Star1 概率节点剪枝的 Expecti-Alpha-Beta 强搜索，绑定 `DarkChessEnv`
 ### 6.4 辅助模块
 
 - `nnue.rs`：`NnueEvaluate`（`evaluate` / `validate_feature_dim` / `init_accumulator`）与 `NnueAccumulator`（`clone_box` / `apply_step` / `evaluate(player)`）契约；具体量化网络实现位于上层 crate；测试用 `DummyNnue`。
-- `ordering.rs`：`order_key` 优先级 = 吃子 MVV-LVA > 杀手 > 历史静走 > 炮吃暗子（机会）> 翻棋垫底；`terminal_value` / `terminal_info` / `victim_value`。
+- `ordering.rs`：`order_key` 优先级 = 吃子 MVV-LVA > 杀手 > 历史静走 > 炮吃暗子（机会）> 翻棋垫底；MVV-LVA 的棋子分值统一取 `GameConfig.piece_values`（与运行时扣血同源）；`terminal_value` / `terminal_info` / `victim_value`。
 - `zobrist.rs`：`zkey` = 棋盘槽位 + 暗子袋（按颜色/类型计数）+ 走子方；**和棋时钟不参与哈希**（换取更多 TT 命中）；`sym_zkey` 为对称视角键；随机数用 SplitMix64，跨运行确定。
 - `smp.rs`：`SharedTT` 将表项打包为单个 `AtomicU64`（value | depth | flag | key_check），best 提示独立 `AtomicU32`；写入 last-write-wins。
 

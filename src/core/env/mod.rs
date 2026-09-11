@@ -2,6 +2,8 @@
 // --- 模块声明 ---
 // ==============================================================================
 
+pub(crate) mod cache;
+
 pub mod actions;
 pub mod bitboard;
 pub mod board;

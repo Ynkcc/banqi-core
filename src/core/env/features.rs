@@ -1,5 +1,3 @@
-use ndarray::{Array1, Array3};
-
 use super::bitboard::ull;
 use super::board::DarkChessEnv;
 use super::config::GameConfig;
@@ -113,39 +111,20 @@ impl DarkChessEnv {
         let (mine, theirs) = view.alive_counts_view(my);
         for counts in [mine, theirs] {
             for &pt in cfg.active_types.iter().take(cfg.num_active) {
-                let count = counts[pt] as usize;
-                vec.extend(std::iter::repeat(1.0).take(count));
-                vec.extend(std::iter::repeat(0.0).take(cfg.piece_counts[pt] - count));
+                push_count_buckets(vec, counts[pt] as usize, cfg.piece_counts[pt]);
             }
         }
 
         // 2 组暗子向量（my/opp 视角）：与存活向量同构的按型计数桶
         for player in [my, opp] {
             for &pt in cfg.active_types.iter().take(cfg.num_active) {
-                let count = view.hidden_counts[player.idx()][pt] as usize;
-                vec.extend(std::iter::repeat(1.0).take(count));
-                vec.extend(std::iter::repeat(0.0).take(cfg.piece_counts[pt] - count));
+                push_count_buckets(
+                    vec,
+                    view.hidden_counts[player.idx()][pt] as usize,
+                    cfg.piece_counts[pt],
+                );
             }
         }
-    }
-
-    /// 当前玩家视角的 ResNet 观测（稠密棋盘张量 + 标量向量）。
-    pub fn get_resnet_state(&self) -> ResNetObservation {
-        let cfg = &self.config;
-        let view = self.state_view();
-        let mut board_data = Vec::with_capacity(cfg.resnet_board_channels * cfg.total_positions);
-        Self::resnet_board_tensor_into(&view, cfg, &mut board_data);
-        let board = Array3::from_shape_vec(
-            (cfg.resnet_board_channels, cfg.rows, cfg.cols),
-            board_data,
-        )
-        .expect("Failed to reshape board array");
-
-        let mut scalars_data = Vec::with_capacity(cfg.resnet_scalar_feature_count);
-        Self::resnet_scalar_vector_into(&view, cfg, &mut scalars_data);
-        let scalars = Array1::from_vec(scalars_data);
-
-        ResNetObservation { board, scalars }
     }
 
     /// 仅将 ResNet 扁平特征写入外部缓冲区，不创建 ResNetObservation。
@@ -154,6 +133,21 @@ impl DarkChessEnv {
         let view = self.state_view();
         Self::resnet_board_tensor_into(&view, cfg, board_data);
         Self::resnet_scalar_vector_into(&view, cfg, scalars_data);
+    }
+}
+
+/// 计数桶：count 个 1.0 + (cap - count) 个 0.0（存活/暗子向量共用）。
+fn push_count_buckets(vec: &mut Vec<f32>, count: usize, cap: usize) {
+    vec.extend(std::iter::repeat_n(1.0, count));
+    vec.extend(std::iter::repeat_n(0.0, cap - count));
+}
+
+/// 逐位迭代位棋盘（低位优先），对每个置位格调用 f。
+fn for_each_sq(mut bb: u64, mut f: impl FnMut(usize)) {
+    while bb != 0 {
+        let sq = bb.trailing_zeros() as usize;
+        f(sq);
+        bb &= bb - 1;
     }
 }
 
@@ -202,27 +196,15 @@ impl DarkChessEnv {
         // --- 格位段：从位棋盘逐位直取（empty/hidden/revealed 互斥完备，
         //     O(明子数) 替代逐格扫描） ---
         let states = cfg.nnue_states_per_square();
-        let mut bb = view.empty_bb;
-        while bb != 0 {
-            let sq = bb.trailing_zeros() as usize;
-            out.push(sq * states); // 空位
-            bb &= bb - 1;
-        }
-        let mut bb = view.hidden_bb;
-        while bb != 0 {
-            let sq = bb.trailing_zeros() as usize;
-            out.push(sq * states + 1);
-            bb &= bb - 1;
-        }
+        for_each_sq(view.empty_bb, |sq| out.push(sq * states)); // 空位
+        for_each_sq(view.hidden_bb, |sq| out.push(sq * states + 1));
         for (player, base_offset) in [(my, 2usize), (opp, 2 + cfg.num_active)] {
             for &pt in cfg.active_types.iter().take(cfg.num_active) {
                 let compact = cfg.compact_index(pt);
-                let mut pb = view.piece_bbs[player.idx()][pt];
-                while pb != 0 {
-                    let sq = pb.trailing_zeros() as usize;
-                    out.push(sq * states + base_offset + compact);
-                    pb &= pb - 1;
-                }
+                let base = base_offset + compact;
+                for_each_sq(view.piece_bbs[player.idx()][pt], |sq| {
+                    out.push(sq * states + base)
+                });
             }
         }
 
