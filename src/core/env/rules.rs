@@ -78,6 +78,45 @@ impl DarkChessEnv {
         self.get_action_masks_for_player_into(self.get_current_player(), mask);
     }
 
+    /// 结构化走法生成：在动作掩码基础上补充坐标与语义标记
+    /// （翻棋 / 吃明子 / 机会动作），供搜索走法排序使用。
+    pub fn generate_moves(&self, player: Player) -> Vec<Move> {
+        let cfg = &self.config;
+        let mut mask = vec![0i32; cfg.action_space_size];
+        self.get_action_masks_for_player_into(player, &mut mask);
+        let lookup = action_lookup_tables(cfg);
+        let hidden_bb = self.get_hidden_bitboard();
+        let opp_revealed_bb = self.get_revealed_bitboards()[player.opposite().idx()];
+
+        (0..cfg.action_space_size)
+            .filter(|&a| mask[a] == 1)
+            .map(|action| {
+                let coords = &lookup.action_to_coords[action];
+                if coords.len() == 1 {
+                    Move {
+                        action,
+                        from: coords[0],
+                        to: coords[0],
+                        is_chance: true,
+                        is_capture: false,
+                        is_flip: true,
+                    }
+                } else {
+                    let (from, to) = (coords[0], coords[1]);
+                    let is_chance = (hidden_bb & ull(to)) != 0;
+                    Move {
+                        action,
+                        from,
+                        to,
+                        is_chance,
+                        is_capture: !is_chance && (opp_revealed_bb & ull(to)) != 0,
+                        is_flip: false,
+                    }
+                }
+            })
+            .collect()
+    }
+
     pub(super) fn get_action_masks_for_player_into(&self, player: Player, mask: &mut [i32]) {
         let cfg = &self.config;
         for m in mask.iter_mut() {
@@ -223,6 +262,78 @@ impl DarkChessEnv {
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::Rng;
+    use rand::SeedableRng;
+
+    /// `generate_moves` 与 `action_masks_into` 的动作集合逐位一致。
+    fn assert_moves_match(env: &DarkChessEnv) {
+        let mut masks = vec![0i32; env.config.action_space_size];
+        env.action_masks_into(&mut masks);
+        let mut gen_actions = vec![0i32; env.config.action_space_size];
+        for m in env.generate_moves(env.get_current_player()) {
+            gen_actions[m.action] = 1;
+        }
+        assert_eq!(
+            masks, gen_actions,
+            "generate_moves 与 action_masks 不一致 (player={})",
+            env.get_current_player()
+        );
+    }
+
+    /// 多 seed 随机对局逐步校验生成动作与掩码始终一致。
+    #[test]
+    fn generate_moves_matches_action_masks() {
+        for seed in 1..=12u64 {
+            let mut env = DarkChessEnv::new();
+            env.seed = Some(seed);
+            env.reset();
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed.wrapping_mul(0x9E37_79B9));
+            for step in 0..80 {
+                assert_moves_match(&env);
+                let mut masks = vec![0i32; env.config.action_space_size];
+                env.action_masks_into(&mut masks);
+                let legal: Vec<usize> = (0..env.config.action_space_size)
+                    .filter(|&i| masks[i] == 1)
+                    .collect();
+                if legal.is_empty() {
+                    break;
+                }
+                let action = legal[rng.gen_range(0..legal.len())];
+                match env.step(action, None) {
+                    Ok((_, terminated, _, _)) => {
+                        if terminated {
+                            break;
+                        }
+                    }
+                    Err(e) => panic!("seed={seed} step={step}: {e}"),
+                }
+            }
+        }
+    }
+
+    /// 元属性抽查：`Move` 的语义标记与 `is_chance_action` 一致，动作可执行。
+    #[test]
+    fn move_metadata_is_consistent() {
+        let mut env = DarkChessEnv::new();
+        env.seed = Some(7);
+        env.reset();
+        for m in env.generate_moves(env.get_current_player()) {
+            assert_eq!(env.is_chance_action(m.action), m.is_chance, "action={}", m.action);
+            if m.is_flip {
+                assert!(m.is_chance && m.from == m.to);
+            }
+            if m.is_capture {
+                assert!(!m.is_chance);
+            }
+            let mut next = env;
+            assert!(next.step(m.action, None).is_ok(), "非法动作 {}", m.action);
         }
     }
 }

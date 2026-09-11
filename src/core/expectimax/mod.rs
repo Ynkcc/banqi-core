@@ -6,7 +6,8 @@
 //! 子模块分层：
 //!   - search:   Expecti-Alpha-Beta 主搜索（negamax + Star1 机会节点 + quiescence + LMR）
 //!   - ordering: 走子排序（MVV-LVA + 杀手 + 历史）+ 终局检测/价值 + 根层送子检测
-//!   - zobrist:  值域常量 + 置换表 TtEntry（哈希下沉至 `core::zobrist`）
+//!   - nnue:     NNUE 叶评估抽象（trait 契约，Expectimax 唯一叶评估来源）
+//!   - zobrist:  Zobrist 局面哈希 + 值域常量 + 置换表 TtEntry
 //!
 //! 值约定：所有搜索值均为“当前节点走子方视角”，范围约 [-1, 1]。
 
@@ -14,9 +15,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::core::env::DarkChessEnv;
-use crate::engine::movegen::Move;
-use crate::inference::nnue::NnueEvaluator;
+use crate::core::env::Move;
+use nnue::NnueEvaluate;
 
+pub mod nnue;
 pub mod ordering;
 pub mod search;
 pub mod smp;
@@ -105,21 +107,10 @@ pub struct ExpectimaxEngine {
 
 impl ExpectimaxEngine {
     /// 以指定 NNUE 评估器创建引擎（叶评估以 NNUE 为唯一来源，搜索强制要求）
-    pub fn with_nnue(evaluator: NnueEvaluator) -> Self {
+    pub fn with_nnue(evaluator: Arc<dyn NnueEvaluate>) -> Self {
         let mut config = SearchConfig::default();
-        config.nnue_evaluator = Some(Arc::new(evaluator));
+        config.nnue_evaluator = Some(evaluator);
         Self { config }
-    }
-
-    /// 从指定 `.nnue` 权重量化文件加载并创建引擎
-    pub fn from_nnue_file(path: &str) -> Result<Self, String> {
-        let evaluator = NnueEvaluator::load_from_file(path)
-            .map_err(|e| format!("加载 NNUE 权重文件失败 {}: {}", path, e))?;
-
-        let mut config = SearchConfig::default();
-        config.nnue_evaluator = Some(Arc::new(evaluator));
-
-        Ok(Self { config })
     }
 
     /// 设置搜索最大深度
@@ -145,25 +136,5 @@ impl ExpectimaxEngine {
     /// 搜寻最佳动作编号
     pub fn best_action(&self, env: &DarkChessEnv) -> Option<usize> {
         self.search(env).map(|res| res.action)
-    }
-}
-
-#[cfg(test)]
-mod engine_entity_tests {
-    use super::*;
-    use crate::core::env::DarkChessEnv;
-
-    #[test]
-    fn test_expectimax_engine_standalone() {
-        let env = DarkChessEnv::default();
-        let nnue = NnueEvaluator::new_dummy(env.config.nnue_feature_dim());
-        let mut engine = ExpectimaxEngine::with_nnue(nnue);
-        engine.set_max_depth(4);
-        engine.set_node_budget(5_000);
-
-        let res = engine.search(&env);
-        assert!(res.is_some(), "ExpectimaxEngine 独立搜索应顺利产出最佳走子");
-        let result = res.unwrap();
-        assert!(result.depth > 0);
     }
 }

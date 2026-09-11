@@ -54,6 +54,23 @@ impl PieceType {
     }
 }
 
+/// 一条结构化走法/翻棋动作（由动作掩码派生，供搜索排序等使用）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Move {
+    /// 动作空间索引
+    pub action: usize,
+    /// 源格（翻棋时 from == to）
+    pub from: usize,
+    /// 目标格
+    pub to: usize,
+    /// 是否为机会动作（目标是暗子：翻棋或吃暗子）
+    pub is_chance: bool,
+    /// 是否为吃明子（目标是对方已翻开的明子）
+    pub is_capture: bool,
+    /// 纯翻棋
+    pub is_flip: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Player {
     Red = 1,

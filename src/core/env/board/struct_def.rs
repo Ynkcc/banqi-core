@@ -58,6 +58,13 @@ pub struct DarkChessEnv {
     pub(crate) last_revealed_piece: Option<Piece>,
 }
 
+impl DarkChessEnv {
+    /// 最近一次翻出的棋子（NNUE 增量差分等外部消费方使用）。
+    pub fn last_revealed_piece(&self) -> Option<Piece> {
+        self.last_revealed_piece
+    }
+}
+
 impl Default for DarkChessEnv {
     fn default() -> Self {
         Self::new()

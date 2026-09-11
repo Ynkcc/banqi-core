@@ -25,7 +25,7 @@ pub use config::{
     NUM_PIECE_TYPES_MAX, compute_action_counts, darkchess_config, game_4x4_config, mini_config,
 };
 pub use symmetry::{Symmetry, action_permutation, sq_map, transform_action, transform_board_flat};
-pub use types::{ResNetObservation, Piece, PieceType, Player, Slot};
+pub use types::{ResNetObservation, Move, Piece, PieceType, Player, Slot};
 pub use board::DarkChessEnv;
 pub use traits::GameEnv;
 pub use bitboard::ull;
