@@ -26,6 +26,7 @@
 |------|----------|----------|
 | 2026-09-11 | 首次成文，基于当前 `src/core` 快照梳理模块划分、关键类型、入口与数据流 | 全库 |
 | 2026-09-11 | `DarkChessEnv` 新增只读访问器 `last_revealed_piece()`（NNUE 增量差分等上层 crate 消费） | `env/board/struct_def.rs` |
+| 2026-09-11 | 新增 `env::variants::CurriculumEnv` trait（`with_initial_revealed(n)`，覆盖初始预翻棋子数；实现于 DarkChessEnv / Game4x4Env / MiniDarkChessEnv，棋盘/动作空间/特征维度不变，服务课程学习） | `env/variants/mod.rs` |
 
 ---
 
@@ -128,6 +129,7 @@ pub mod mcts;
 | `compute_action_counts` | `env::config` | 由 `(rows, cols)` 推导 `(reveal, regular, cannon)` 计数 |
 | `DarkChessEnv` | `env::board` | `Copy` 环境，config 驱动；所有数组按 `MAX_*` 上界分配 |
 | `GameEnv` | `env::traits` | MCTS 依赖的最小泛型接口 |
+| `CurriculumEnv` | `env::variants` | 课程学习构造 trait：`with_initial_revealed(n)` 以指定初始翻子数创建变体环境（DarkChessEnv / Game4x4Env / MiniDarkChessEnv 均实现） |
 | `Game4x4Env` / `MiniDarkChessEnv` | `env::variants` | 包装 `DarkChessEnv` + 变体关联常量 |
 | `TicTacToeEnv` | `env::variants::tic_tac_toe` | 独立 `Copy` 环境，无机会节点，用于 MCTS 泛型验证 |
 | `StateView` | `env::features` | `pub(crate)` 架构无关只读快照，ResNet 与 NNUE 特征的统一投影源 |
