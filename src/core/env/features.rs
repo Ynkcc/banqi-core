@@ -134,6 +134,22 @@ impl DarkChessEnv {
         Self::resnet_board_tensor_into(&view, cfg, board_data);
         Self::resnet_scalar_vector_into(&view, cfg, scalars_data);
     }
+
+    /// 当前玩家视角的 ResNet 观测，形状由 `config` 决定（4x8 / 4x4 / 4x2 均可）。
+    ///
+    /// 不能用 `GameEnv` 的关联常量重塑：`DarkChessEnv` 的常量固定为 4x8，
+    /// 非 4x8 变体下编码长度与常量不匹配，重塑会直接 panic。
+    pub fn get_resnet_state(&self) -> ResNetObservation {
+        let cfg = &self.config;
+        let mut board_data = Vec::new();
+        let mut scalars_data = Vec::new();
+        self.resnet_features_flat_into(&mut board_data, &mut scalars_data);
+        ResNetObservation::from_flat(
+            board_data,
+            scalars_data,
+            (cfg.resnet_board_channels, cfg.rows, cfg.cols),
+        )
+    }
 }
 
 /// 计数桶：count 个 1.0 + (cap - count) 个 0.0（存活/暗子向量共用）。

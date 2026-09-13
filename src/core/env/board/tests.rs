@@ -4,6 +4,31 @@
 use super::*;
 use crate::core::env::traits::GameEnv;
 
+/// 三个变体的观测形状与动作空间必须由 config 决定。
+#[test]
+fn resnet_state_shape_follows_config() {
+    for env in [
+        DarkChessEnv::new(),
+        DarkChessEnv::new_4x4(),
+        DarkChessEnv::new_mini(),
+    ] {
+        let obs = GameEnv::get_resnet_state(&env);
+        assert_eq!(
+            obs.board.dim(),
+            (
+                env.config.resnet_board_channels,
+                env.config.rows,
+                env.config.cols
+            )
+        );
+        assert_eq!(obs.scalars.len(), env.config.resnet_scalar_feature_count);
+        assert_eq!(
+            GameEnv::action_space_size(&env),
+            env.config.action_space_size
+        );
+    }
+}
+
 /// 随机走子对局，持续检查每个观测的 bitboard 一致性。
 #[test]
 fn random_game_keeps_board_consistent() {

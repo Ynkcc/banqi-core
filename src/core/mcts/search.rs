@@ -44,6 +44,9 @@ pub struct GumbelMCTS<'a, G: GameEnv, E: Evaluator<G>> {
     /// 遍历临时缓冲：select_path_collect 中沿路径向下时复用，
     /// 存储当前遍历节点的 action mask。与 root_action_mask 物理隔离。
     pub(crate) traversal_action_mask: Vec<i32>,
+    /// 动作空间大小：由初始环境的 `config` 决定（4x8 / 4x4 / 4x2 各不相同），
+    /// 搜索期间环境不变，故在构造时固定。
+    pub(crate) action_space: usize,
     /// 复用的随机数生成器，避免每次搜索/采样重建 thread_rng
     pub(crate) rng: StdRng,
 }
@@ -63,6 +66,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         let state = env.get_resnet_state();
         let root_node = MctsNode::new(1.0, 0.0, false, Some(*env), Some(state), true);
         let root_idx = arena.allocate(root_node);
+        let action_space = env.action_space_size();
 
         Self {
             arena,
@@ -70,8 +74,9 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
             evaluator,
             config,
             scratch_gumbel: Vec::with_capacity(32),
-            root_action_mask: vec![0; G::action_space_size()],
-            traversal_action_mask: vec![0; G::action_space_size()],
+            root_action_mask: vec![0; action_space],
+            traversal_action_mask: vec![0; action_space],
+            action_space,
             rng: StdRng::from_entropy(),
         }
     }
@@ -416,7 +421,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
 
     /// 收集根节点各动作的 logits（未出现的动作填 -1e6）。
     pub(crate) fn root_logits(&self) -> Vec<f32> {
-        (0..G::action_space_size())
+        (0..self.action_space)
             .map(|i| {
                 self.arena
                     .get(self.root_idx)
@@ -442,7 +447,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
             .env
             .as_ref()
             .expect("Root must have env");
-        let mut masks = vec![0; G::action_space_size()];
+        let mut masks = vec![0; self.action_space];
         env.action_masks_into(&mut masks);
         let probs = self.compute_probs_from_logits(logits, &masks);
 
@@ -471,7 +476,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
     pub(crate) fn apply_leaf_evals(&mut self, evals: &[(&PendingEval<G>, &[f32], f32, f32)]) {
         let mut eval_values: Vec<(f32, f32)> = Vec::with_capacity(evals.len());
         for (pending, logits, value, health) in evals {
-            let mut masks = vec![0; G::action_space_size()];
+            let mut masks = vec![0; self.action_space];
             pending.env.action_masks_into(&mut masks);
             let probs = self.compute_probs_from_logits(logits, &masks);
             let leaf_idx = Self::get_node_idx_by_path(&self.arena, self.root_idx, &pending.path);

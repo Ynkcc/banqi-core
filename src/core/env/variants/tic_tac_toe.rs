@@ -9,7 +9,7 @@
 // - 特征编码遵循暗棋 features.rs 约定：通道0=当前方棋子，通道1=对手棋子。
 
 use crate::core::env::traits::GameEnv;
-use crate::core::env::types::Player;
+use crate::core::env::types::{Player, ResNetObservation};
 
 /// 井字棋动作空间大小（= 格子数）
 pub const TTT_ACTION_SPACE_SIZE: usize = 9;
@@ -116,7 +116,7 @@ impl Default for TicTacToeEnv {
 }
 
 impl GameEnv for TicTacToeEnv {
-    fn action_space_size() -> usize {
+    fn action_space_size(&self) -> usize {
         TTT_ACTION_SPACE_SIZE
     }
 
@@ -154,14 +154,20 @@ impl GameEnv for TicTacToeEnv {
         TTT_ACTION_SPACE_SIZE
     }
 
-    const RESNET_BOARD_CHANNELS: usize = TTT_RESNET_BOARD_CHANNELS;
-    const BOARD_ROWS: usize = TTT_BOARD_ROWS;
-    const BOARD_COLS: usize = TTT_BOARD_COLS;
-    const RESNET_SCALAR_FEATURE_COUNT: usize = TTT_RESNET_SCALAR_FEATURE_COUNT;
-
     fn encode_resnet_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) {
         self.encode_into(board_data);
         scalars_data.clear();
+    }
+
+    fn get_resnet_state(&self) -> ResNetObservation {
+        let mut board_data = Vec::new();
+        let mut scalars_data = Vec::new();
+        self.encode_resnet_features_flat_into(&mut board_data, &mut scalars_data);
+        ResNetObservation::from_flat(
+            board_data,
+            scalars_data,
+            (TTT_RESNET_BOARD_CHANNELS, TTT_BOARD_ROWS, TTT_BOARD_COLS),
+        )
     }
 }
 

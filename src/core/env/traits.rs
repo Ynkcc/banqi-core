@@ -19,14 +19,14 @@ use super::types::{ResNetObservation, Piece, Player};
 ///
 /// 要求 `Copy`：MCTS 节点以值语义保存环境快照（与既有 DarkChessEnv 的 Copy 设计一致）。
 pub trait GameEnv: Copy + Clone + Send + Sync + 'static {
-    /// 动作空间大小
-    fn action_space_size() -> usize;
+    /// 动作空间大小（运行时值：由 `config` 决定，4x8 / 4x4 / 4x2 各不相同）
+    fn action_space_size(&self) -> usize;
 
     /// 当前玩家
     fn get_current_player(&self) -> Player;
 
     /// 将合法动作掩码写入 `masks`（合法位置 1，其余位置 0）。
-    /// 调用方保证 `masks.len() >= Self::action_space_size()`。
+    /// 调用方保证 `masks.len() >= self.action_space_size()`。
     fn action_masks_into(&self, masks: &mut [i32]);
 
     /// 执行动作，返回 `(奖励, 是否终止, 是否截断, 胜者)`。
@@ -38,20 +38,9 @@ pub trait GameEnv: Copy + Clone + Send + Sync + 'static {
 
     /// 获取当前观测（神经网络输入）。
     ///
-    /// 默认实现：调用 `encode_resnet_features_flat_into` 后按
-    /// `(RESNET_BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS)` 重塑。
-    fn get_resnet_state(&self) -> ResNetObservation {
-        let (ch, rows, cols) = (Self::RESNET_BOARD_CHANNELS, Self::BOARD_ROWS, Self::BOARD_COLS);
-        let mut board_data = Vec::with_capacity(ch * rows * cols);
-        let mut scalars_data = Vec::with_capacity(Self::RESNET_SCALAR_FEATURE_COUNT);
-        self.encode_resnet_features_flat_into(&mut board_data, &mut scalars_data);
-        let board = ndarray::Array3::from_shape_vec((ch, rows, cols), board_data)
-            .expect("Failed to reshape board array");
-        ResNetObservation {
-            board,
-            scalars: ndarray::Array1::from_vec(scalars_data),
-        }
-    }
+    /// 形状不能由编译期常量表达：`DarkChessEnv` 的棋盘行列 / 通道 / 标量数
+    /// 由运行时 `config` 决定，同一类型可对应 4x8 / 4x4 / 4x2 三种变体。
+    fn get_resnet_state(&self) -> ResNetObservation;
 
     /// 终局检测：`(terminated, truncated, winner)`
     fn check_game_over_conditions(&self) -> (bool, bool, Option<i32>);
@@ -62,17 +51,8 @@ pub trait GameEnv: Copy + Clone + Send + Sync + 'static {
     }
 
     // ------------------------------------------------------------------------
-    // 神经网络特征形状（供批量推理 / Python 绑定使用）
+    // 神经网络特征（供批量推理 / Python 绑定使用）
     // ------------------------------------------------------------------------
-
-    /// 棋盘特征通道数
-    const RESNET_BOARD_CHANNELS: usize;
-    /// 棋盘行数
-    const BOARD_ROWS: usize;
-    /// 棋盘列数
-    const BOARD_COLS: usize;
-    /// 标量特征数
-    const RESNET_SCALAR_FEATURE_COUNT: usize;
 
     /// 将环境编码为扁平特征写入外部缓冲区。
     fn encode_resnet_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>);
@@ -133,8 +113,8 @@ pub fn get_outcome_id(cfg: &GameConfig, piece: &Piece) -> usize {
 }
 
 impl GameEnv for DarkChessEnv {
-    fn action_space_size() -> usize {
-        super::constants::ACTION_SPACE_SIZE
+    fn action_space_size(&self) -> usize {
+        self.config.action_space_size
     }
 
     fn get_current_player(&self) -> Player {
@@ -157,13 +137,12 @@ impl GameEnv for DarkChessEnv {
         super::constants::MAX_STEPS_PER_EPISODE
     }
 
-    const RESNET_BOARD_CHANNELS: usize = super::constants::RESNET_BOARD_CHANNELS;
-    const BOARD_ROWS: usize = super::constants::BOARD_ROWS;
-    const BOARD_COLS: usize = super::constants::BOARD_COLS;
-    const RESNET_SCALAR_FEATURE_COUNT: usize = super::constants::RESNET_SCALAR_FEATURE_COUNT;
-
     fn encode_resnet_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) {
         DarkChessEnv::resnet_features_flat_into(self, board_data, scalars_data);
+    }
+
+    fn get_resnet_state(&self) -> ResNetObservation {
+        DarkChessEnv::get_resnet_state(self)
     }
 
     // --- 机会节点 ---

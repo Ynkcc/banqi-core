@@ -82,7 +82,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
     ///
     /// 返回基于访问次数归一化的概率分布，可用于训练策略网络。已弃用，建议使用 `get_improved_policy` 获取 Gumbel AlphaZero 的改进策略。
     pub fn get_root_probabilities(&self) -> Vec<f32> {
-        let mut probs = vec![0.0; G::action_space_size()];
+        let mut probs = vec![0.0; self.action_space];
         let root = self.arena.get(self.root_idx);
         let total = root.visit_count as f32;
         if total == 0.0 {
@@ -113,10 +113,10 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
     pub fn get_improved_policy(&self) -> Vec<f32> {
         let env = match self.arena.get(self.root_idx).env.as_ref() {
             Some(env) => env,
-            None => return vec![0.0; G::action_space_size()],
+            None => return vec![0.0; self.action_space],
         };
 
-        let mut masks = vec![0; G::action_space_size()];
+        let mut masks = vec![0; self.action_space];
         env.action_masks_into(&mut masks);
 
         // 1. 计算打分: logit + sigma * completed_q
@@ -125,9 +125,9 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         let root_visit_count = root.visit_count as f32;
         let sigma_scale = self.config.c_scale * (1.0 + root_visit_count).ln();
 
-        let mut scores = vec![f32::NEG_INFINITY; G::action_space_size()];
+        let mut scores = vec![f32::NEG_INFINITY; self.action_space];
 
-        for action in 0..G::action_space_size() {
+        for action in 0..self.action_space {
             if masks[action] != 1 {
                 continue;
             }

@@ -29,7 +29,7 @@ macro_rules! impl_darkchess_variant {
                 }
             }
 
-            pub fn action_space_size() -> usize {
+            pub fn action_space_size(&self) -> usize {
                 $cfg().action_space_size
             }
 
@@ -102,8 +102,8 @@ macro_rules! impl_darkchess_variant {
         }
 
         impl crate::core::env::GameEnv for $ty {
-            fn action_space_size() -> usize {
-                Self::action_space_size()
+            fn action_space_size(&self) -> usize {
+                $ACT
             }
 
             fn get_current_player(&self) -> crate::core::env::types::Player {
@@ -126,17 +126,16 @@ macro_rules! impl_darkchess_variant {
                 $cfg().max_steps_per_episode
             }
 
-            const RESNET_BOARD_CHANNELS: usize = $cfg().resnet_board_channels;
-            const BOARD_ROWS: usize = $cfg().rows;
-            const BOARD_COLS: usize = $cfg().cols;
-            const RESNET_SCALAR_FEATURE_COUNT: usize = $cfg().resnet_scalar_feature_count;
-
             fn encode_resnet_features_flat_into(
                 &self,
                 board_data: &mut Vec<f32>,
                 scalars_data: &mut Vec<f32>,
             ) {
                 self.inner.resnet_features_flat_into(board_data, scalars_data);
+            }
+
+            fn get_resnet_state(&self) -> crate::core::env::types::ResNetObservation {
+                self.inner.get_resnet_state()
             }
 
             fn is_chance_action(&self, action: usize) -> bool {

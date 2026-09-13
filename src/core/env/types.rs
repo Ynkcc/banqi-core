@@ -148,3 +148,24 @@ pub struct ResNetObservation {
     /// 全局标量特征: (Features,)
     pub scalars: Array1<f32>,
 }
+
+impl ResNetObservation {
+    /// 由扁平特征与棋盘形状构建观测（形状各环境自持，见 `GameEnv::get_resnet_state`）。
+    pub fn from_flat(
+        board_data: Vec<f32>,
+        scalars_data: Vec<f32>,
+        shape: (usize, usize, usize),
+    ) -> Self {
+        let actual = board_data.len();
+        let board = Array3::from_shape_vec(shape, board_data).unwrap_or_else(|e| {
+            panic!(
+                "Failed to reshape board array: 期望形状 {shape:?}（{} 个元素），实际 {actual} 个 ({e})",
+                shape.0 * shape.1 * shape.2
+            )
+        });
+        Self {
+            board,
+            scalars: Array1::from_vec(scalars_data),
+        }
+    }
+}

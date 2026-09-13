@@ -283,7 +283,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         parent_value: f32,
         parent_health: f32,
     ) {
-        let mut masks = vec![0; G::action_space_size()];
+        let mut masks = vec![0; env.action_space_size()];
         env.action_masks_into(&mut masks);
         let parent_player = arena.get(node_idx).player();
 
