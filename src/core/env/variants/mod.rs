@@ -33,7 +33,7 @@ macro_rules! impl_darkchess_variant {
                 $cfg().action_space_size
             }
 
-            pub fn max_steps() -> usize {
+            pub fn max_steps(&self) -> usize {
                 $cfg().max_steps_per_episode
             }
 
@@ -122,7 +122,7 @@ macro_rules! impl_darkchess_variant {
                 self.inner.check_game_over_conditions()
             }
 
-            fn max_steps() -> usize {
+            fn max_steps(&self) -> usize {
                 $cfg().max_steps_per_episode
             }
 

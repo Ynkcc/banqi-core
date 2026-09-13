@@ -17,7 +17,7 @@ use rand::prelude::*;
 
 /// 单次 `select_path_collect` 允许的最大路径步数。
 ///
-/// 正常路径长度受棋盘规模与 MAX_STEPS_PER_EPISODE 约束，远小于该值；
+/// 正常路径长度受棋盘规模与 `config.max_steps_per_episode` 约束，远小于该值；
 /// 该上限仅用于防御极端情况（如树结构损坏导致的无限循环）。
 /// 超限时按当前节点已有 Q 值回传兜底，避免静默丢弃路径。
 const MAX_SELECT_STEPS: usize = 512;

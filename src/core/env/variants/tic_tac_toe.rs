@@ -150,7 +150,7 @@ impl GameEnv for TicTacToeEnv {
         (winner.is_some(), false, winner)
     }
 
-    fn max_steps() -> usize {
+    fn max_steps(&self) -> usize {
         TTT_ACTION_SPACE_SIZE
     }
 

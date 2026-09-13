@@ -1,7 +1,13 @@
 use super::cache::{cached, global_cache};
 use super::config::GameConfig;
-use super::constants::{DIRECTION_DOWN, DIRECTION_LEFT, DIRECTION_RIGHT, DIRECTION_UP, NUM_DIRECTIONS};
 use std::sync::Arc;
+
+// --- 方向常量（棋盘几何，与具体变体无关）---
+pub const DIRECTION_UP: usize = 0;
+pub const DIRECTION_DOWN: usize = 1;
+pub const DIRECTION_LEFT: usize = 2;
+pub const DIRECTION_RIGHT: usize = 3;
+pub const NUM_DIRECTIONS: usize = 4;
 
 // ==============================================================================
 // --- Bitboard 辅助函数（config 驱动） ---

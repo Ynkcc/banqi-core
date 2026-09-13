@@ -8,7 +8,6 @@ pub mod actions;
 pub mod bitboard;
 pub mod board;
 pub mod config;
-pub mod constants;
 pub mod features;
 pub mod rules;
 pub mod seed;
@@ -21,7 +20,6 @@ pub mod variants;
 // --- 公共 API 导出 ---
 // ==============================================================================
 
-pub use constants::*;
 pub use config::{
     GameConfig, MAX_PIECES_PER_PLAYER, MAX_POSITIONS, MAX_REVEAL_PROBABILITY_SIZE,
     NUM_PIECE_TYPES_MAX, compute_action_counts, darkchess_config, game_4x4_config, mini_config,

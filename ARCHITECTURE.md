@@ -30,6 +30,7 @@
 | 2026-09-13 | `GameEnv::action_space_size()` 由关联函数改为 `&self` 方法（返回 `config.action_space_size`）：`DarkChessEnv` 同类型可对应 4x8 / 4x4 / 4x2，动作空间须随变体变化；`GumbelMCTS` 新增 `action_space` 字段（构造时冻结）替代各处的 `G::action_space_size()`，掩码/策略/logits 缓冲随变体收敛（4x2 由 352 降到 40），变体包装固有方法同步改为 `&self` | `env/traits.rs`、`env/variants/mod.rs`、`env/variants/tic_tac_toe.rs`、`mcts/search.rs`、`mcts/tree.rs`、`mcts/policy.rs` |
 | 2026-09-13 | 修复 `get_resnet_state` 变体 panic 并移除虚假形状常量：①`GameEnv` 删除 `RESNET_BOARD_CHANNELS` / `BOARD_ROWS` / `BOARD_COLS` / `RESNET_SCALAR_FEATURE_COUNT` 四个关联常量（`DarkChessEnv` 可运行时切换 4x8 / 4x4 / 4x2，编译期常量无法表达，曾导致非 4x8 变体编码长度与常量不匹配而重塑 panic）；②`get_resnet_state` 改为必需方法：`DarkChessEnv` 由 `config` 推导形状，变体包装转发 inner，`TicTacToeEnv` 用自身常量；③新增 `ResNetObservation::from_flat` 统一重塑与报错信息；④新增回归测试 `resnet_state_shape_follows_config` | `env/traits.rs`、`env/features.rs`、`env/types.rs`、`env/variants/mod.rs`、`env/variants/tic_tac_toe.rs`、`env/board/tests.rs` |
 | 2026-09-11 | 去重重构：①新增 `env/cache.rs` 泛型 `OnceLock` 缓存（`global_cache!` / `cached`），actions/bitboard/symmetry 四套缓存样板收敛；②变体包装（Game4x4Env / MiniDarkChessEnv）的常量、固有方法与 `GameEnv` 委托实现由 `variants::impl_darkchess_variant!` 宏统一生成，变体常量改由 const fn 配置函数推导；③`GameEnv::get_resnet_state` 提供基于 `encode_resnet_features_flat_into` 的默认实现，删除 DarkChessEnv / TicTacToeEnv 重复 impl；④`config.rs` 提取共享构建器 `make_config`，三变体配置收敛；⑤MCTS run 与 batched 双路径共享根准备（`refresh_root_action_mask` / `root_logits` / `sample_root_candidates`）、根扩展（`apply_root_eval`）、叶回填（`apply_leaf_evals`）与结果组装（`build_result`），`MctsNode` 新增 `child_idx` / `outcome_idx` 查找方法；⑥expectimax 提取 `require_nnue` / `feature_dim_ok` / `move_to_front` / `iterative_deepen`；⑦`PieceType::value()` 删除，走子排序统一使用 `GameConfig.piece_values`（修复 4x4 变体下排序分值与扣血不一致） | 全库（env / mcts / expectimax） |
+| 2026-09-13 | 变体常量去重：删除 `env/constants.rs`（4x8 硬编码重复常量，仅方向常量移入 `bitboard.rs`）；`GameEnv::max_steps` 由关联函数改为 `&self` 方法、由 `config.max_steps_per_episode` 驱动（`banqi-engine` 策略 / `banqi-collector` 自对弈同步改用 `env.config`，不再依赖 4x8 编译期常量） | `env/mod.rs`、`env/bitboard.rs`、`env/traits.rs`、`env/variants/*` |
 
 ---
 
@@ -62,13 +63,12 @@ src/
       mod.rs                  # 声明 + 公共 re-export
       types.rs                # PieceType / Player / Piece / Slot / Move / ResNetObservation
       config.rs               # GameConfig + 各变体配置（const fn + 共享构建器 make_config）+ 动作计数 + NNUE 布局推导
-      constants.rs            # 4x8 编译期常量（回归基准）
       cache.rs                # 泛型 OnceLock 缓存：global_cache! 宏 + cached() 查/建/插
       traits.rs               # GameEnv trait + DarkChessEnv 实现 + 机会节点扩展点
       rules.rs                # 终局判定 + 动作掩码生成 + 结构化走子生成 + first_blocker
       features.rs             # StateView 投影 + ResNet 稠密特征 + NNUE 稀疏特征
       actions.rs              # 动作查找表（config 驱动 + 全局缓存）
-      bitboard.rs             # 位棋盘辅助 + 射线表（config 驱动 + 缓存）
+      bitboard.rs             # 方向常量 + 位棋盘辅助 + 射线表（config 驱动 + 缓存）
       symmetry.rs             # D4 / Klein-4 空间对称（格子重排 / 动作置换）
       seed.rs                 # AsDarkChessRef / SeedableEnv trait
       board/
@@ -189,8 +189,8 @@ pub mod mcts;
 
 `env::traits::GameEnv` 是 MCTS 泛型化的唯一约束，要求 `Copy + Clone + Send + Sync + 'static`：
 
-- 关联常量：`RESNET_BOARD_CHANNELS` / `BOARD_ROWS` / `BOARD_COLS` / `RESNET_SCALAR_FEATURE_COUNT`；
-- 核心方法：`action_space_size()`、`get_current_player()`、`action_masks_into()`、`step()`、`check_game_over_conditions()`、`encode_resnet_features_flat_into()`；`get_resnet_state()` 为默认实现（调用 `encode_resnet_features_flat_into` 后按关联常量重塑）；
+- 无关联形状常量：棋盘行列 / 通道数 / 标量数 / 步数上限均由运行时 `config` 决定（不设编译期变体常量）；
+- 核心方法：`action_space_size(&self)`、`get_current_player()`、`action_masks_into()`、`step()`、`check_game_over_conditions()`、`max_steps(&self)`、`encode_resnet_features_flat_into()`；`get_resnet_state()` 为必需方法（`DarkChessEnv` 由 `config` 推导形状，变体转发 inner，`TicTacToeEnv` 用自身常量）；
 - **机会节点扩展点**（暗棋特有，默认关闭）：`is_chance_action()` / `chance_outcomes()` / `step_outcome_id()`。`DarkChessEnv`、`Game4x4Env`、`MiniDarkChessEnv` 覆盖实现；`TicTacToeEnv` 保持默认（无机会节点）；
 - 终局血量辅助：`terminal_health_diff_red()` / `terminal_health_diff_red_int()` / `health_diff_scale()`，供 MCTS 血量复合效用使用。
 

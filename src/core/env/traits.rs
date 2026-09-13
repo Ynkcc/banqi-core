@@ -12,7 +12,6 @@
 
 use super::board::DarkChessEnv;
 use super::config::GameConfig;
-use super::constants::MAX_STEPS_PER_EPISODE;
 use super::types::{ResNetObservation, Piece, Player};
 
 /// 泛型游戏环境：Gumbel MCTS 对其施加的全部约束。
@@ -46,9 +45,7 @@ pub trait GameEnv: Copy + Clone + Send + Sync + 'static {
     fn check_game_over_conditions(&self) -> (bool, bool, Option<i32>);
 
     /// 每局最大步数（步数上限截断）。
-    fn max_steps() -> usize {
-        MAX_STEPS_PER_EPISODE
-    }
+    fn max_steps(&self) -> usize;
 
     // ------------------------------------------------------------------------
     // 神经网络特征（供批量推理 / Python 绑定使用）
@@ -133,8 +130,8 @@ impl GameEnv for DarkChessEnv {
         DarkChessEnv::check_game_over_conditions(self)
     }
 
-    fn max_steps() -> usize {
-        super::constants::MAX_STEPS_PER_EPISODE
+    fn max_steps(&self) -> usize {
+        self.config.max_steps_per_episode
     }
 
     fn encode_resnet_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) {
