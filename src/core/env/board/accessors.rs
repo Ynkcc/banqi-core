@@ -25,6 +25,11 @@ impl DarkChessEnv {
         self.total_step_counter
     }
 
+    /// 产生当前局面的最后一步动作；初始局面返回 None。
+    pub fn get_last_action(&self) -> Option<usize> {
+        usize::try_from(self.last_action).ok()
+    }
+
     pub fn get_score(&self, player: Player) -> i32 {
         self.scores[player.idx()]
     }
