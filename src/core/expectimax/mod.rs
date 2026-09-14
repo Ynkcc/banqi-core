@@ -4,10 +4,14 @@
 //! （置换表 + 走子排序 + 静态搜索 + LMR + 迭代加深），叶评估以 NNUE 为唯一来源。
 //!
 //! 子模块分层：
-//!   - search:   Expecti-Alpha-Beta 主搜索（negamax + Star1 机会节点 + quiescence + LMR）
-//!   - ordering: 走子排序（MVV-LVA + 杀手 + 历史）+ 终局检测/价值 + 根层送子检测
-//!   - nnue:     NNUE 叶评估抽象（trait 契约，Expectimax 唯一叶评估来源）
-//!   - zobrist:  Zobrist 局面哈希 + 值域常量 + 置换表 TtEntry
+//!   - search:    搜索入口与 Lazy SMP（search / search_par）
+//!   - negamax:   递归主体（negamax + Star1 机会节点 + quiescence + LMR + TT）
+//!   - iterative: 迭代加深（根层单层搜索 + 逐层加深）
+//!   - eval:      叶评估与增量累加器辅助
+//!   - config:    SearchConfig / SearchResult（经 search 再导出）
+//!   - ordering:  走子排序（MVV-LVA + 杀手 + 历史）+ 终局检测/价值
+//!   - nnue:      NNUE 叶评估抽象（trait 契约，Expectimax 唯一叶评估来源）
+//!   - zobrist:   Zobrist 局面哈希 + 值域常量 + 置换表 TtEntry
 //!
 //! 值约定：所有搜索值均为“当前节点走子方视角”，范围约 [-1, 1]。
 
@@ -23,6 +27,11 @@ pub mod ordering;
 pub mod search;
 pub mod smp;
 pub mod zobrist;
+
+mod config;
+mod eval;
+mod iterative;
+mod negamax;
 
 #[cfg(test)]
 mod tests;

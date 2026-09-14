@@ -2,6 +2,7 @@
 // 内部状态复位、棋盘初始化、翻子处理、翻棋概率表。
 
 use super::*;
+use crate::core::env::error::EnvError;
 
 impl DarkChessEnv {
     pub(crate) fn reset_internal_state(&mut self) {
@@ -63,35 +64,54 @@ impl DarkChessEnv {
             let reveal_count = std::cmp::min(hidden_indices.len(), cfg.initial_revealed_pieces);
 
             for &idx in hidden_indices.iter().take(reveal_count) {
-                self.reveal_piece_at(idx, None);
+                if let Err(e) = self.reveal_piece_at(idx, None) {
+                    eprintln!("⚠️ initialize_board 预翻棋子失败 (sq={idx}): {e}");
+                    break;
+                }
             }
         }
     }
 
     /// 翻开指定位置的棋子并更新 Bitboards
-    pub(crate) fn reveal_piece_at(&mut self, sq: usize, specified_piece: Option<Piece>) {
+    pub(crate) fn reveal_piece_at(
+        &mut self,
+        sq: usize,
+        specified_piece: Option<Piece>,
+    ) -> Result<(), EnvError> {
         if !matches!(self.board[sq], Slot::Hidden) {
-            panic!("尝试翻开非 Hidden 位置: {}", sq);
+            return Err(EnvError::BrokenInvariant {
+                context: "尝试翻开非暗子位置",
+            });
         }
 
         if self.hidden_pieces_count == 0 {
-            panic!("逻辑错误：棋盘上有 Hidden 位置，但 hidden_pieces 池已空");
+            return Err(EnvError::BrokenInvariant {
+                context: "棋盘有暗子但隐藏棋子池已空",
+            });
         }
 
         // 获取 slice 视图
         let active_slice = &self.hidden_pieces_pool[0..self.hidden_pieces_count];
 
         let idx = if let Some(target) = specified_piece {
-            active_slice
-                .iter()
-                .position(|p| *p == target)
-                .expect("指定的棋子不在隐藏棋子池中")
+            match active_slice.iter().position(|p| *p == target) {
+                Some(idx) => idx,
+                None => {
+                    return Err(EnvError::BrokenInvariant {
+                        context: "指定的棋子不在隐藏棋子池中",
+                    });
+                }
+            }
         } else if let Some(tb) = self.true_board {
             let target = tb[sq];
-            active_slice
-                .iter()
-                .position(|p| *p == target)
-                .unwrap_or_else(|| panic!("真实棋盘指定棋子不在隐藏池: sq={}, tb[sq]={:?}", sq, target))
+            match active_slice.iter().position(|p| *p == target) {
+                Some(idx) => idx,
+                None => {
+                    return Err(EnvError::BrokenInvariant {
+                        context: "真实棋盘指定棋子不在隐藏池",
+                    });
+                }
+            }
         } else {
             let mut rng = thread_rng();
             rng.gen_range(0..self.hidden_pieces_count)
@@ -116,6 +136,7 @@ impl DarkChessEnv {
         self.board[sq] = Slot::Revealed(piece);
         self.last_revealed_piece = Some(piece);
         self.update_reveal_probabilities();
+        Ok(())
     }
 
     fn update_reveal_probabilities(&mut self) {

@@ -99,13 +99,12 @@ impl<'a, G: GameEnv, E: Evaluator<G>> BatchedTree<'a, G, E> {
                     // 继续在 searching 阶段收集
                     self.collect_searching(out)
                 } else {
-                    let env = *self
-                        .tree
-                        .arena
-                        .get(root_idx)
-                        .env
-                        .as_ref()
-                        .expect("Root must have env");
+                    let Some(env) = self.tree.arena.get(root_idx).env else {
+                        eprintln!("⚠️ batched: 根节点缺少环境 (node={})", root_idx);
+                        self.game_over = true;
+                        self.stage = Stage::Idle;
+                        return false;
+                    };
                     let leaf_player = self.tree.arena.get(root_idx).player();
                     out.push(PendingEval {
                         path: Vec::new(),
@@ -255,14 +254,13 @@ impl<'a, G: GameEnv, E: Evaluator<G>> BatchedTree<'a, G, E> {
         self.action = Some(action);
 
         // 执行动作并推进树
-        let env_root = self
-            .tree
-            .arena
-            .get(self.tree.root_idx)
-            .env
-            .as_ref()
-            .expect("Root must have env");
-        let mut env = *env_root;
+        let Some(env_root) = self.tree.arena.get(self.tree.root_idx).env else {
+            eprintln!("⚠️ batched: 根节点缺少环境 (node={})", self.tree.root_idx);
+            self.game_over = true;
+            self.stage = Stage::Idle;
+            return false;
+        };
+        let mut env = env_root;
         let step_res = env.step(action);
         let (terminated, truncated, winner) = match step_res {
             Ok((_, terminated, truncated, winner)) => (terminated, truncated, winner),

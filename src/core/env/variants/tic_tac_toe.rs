@@ -8,6 +8,7 @@
 // - 玩家视角与暗棋一致：红方 Red=1 先手执 X，黑方 Black=-1 后手执 O。
 // - 特征编码遵循暗棋 features.rs 约定：通道0=当前方棋子，通道1=对手棋子。
 
+use crate::core::env::EnvError;
 use crate::core::env::traits::GameEnv;
 use crate::core::env::types::{Player, ResNetObservation};
 
@@ -130,9 +131,9 @@ impl GameEnv for TicTacToeEnv {
         }
     }
 
-    fn step(&mut self, action: usize) -> Result<(f32, bool, bool, Option<i32>), String> {
+    fn step(&mut self, action: usize) -> Result<(f32, bool, bool, Option<i32>), EnvError> {
         if action >= TTT_ACTION_SPACE_SIZE || self.cells[action] != 0 {
-            return Err(format!("无效动作: {}", action));
+            return Err(EnvError::IllegalAction { action });
         }
         self.cells[action] = self.current_player.val() as i8;
         self.total_steps += 1;

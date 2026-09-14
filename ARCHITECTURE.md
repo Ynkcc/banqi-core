@@ -32,6 +32,8 @@
 | 2026-09-11 | 去重重构：①新增 `env/cache.rs` 泛型 `OnceLock` 缓存（`global_cache!` / `cached`），actions/bitboard/symmetry 四套缓存样板收敛；②变体包装（Game4x4Env / MiniDarkChessEnv）的常量、固有方法与 `GameEnv` 委托实现由 `variants::impl_darkchess_variant!` 宏统一生成，变体常量改由 const fn 配置函数推导；③`GameEnv::get_resnet_state` 提供基于 `encode_resnet_features_flat_into` 的默认实现，删除 DarkChessEnv / TicTacToeEnv 重复 impl；④`config.rs` 提取共享构建器 `make_config`，三变体配置收敛；⑤MCTS run 与 batched 双路径共享根准备（`refresh_root_action_mask` / `root_logits` / `sample_root_candidates`）、根扩展（`apply_root_eval`）、叶回填（`apply_leaf_evals`）与结果组装（`build_result`），`MctsNode` 新增 `child_idx` / `outcome_idx` 查找方法；⑥expectimax 提取 `require_nnue` / `feature_dim_ok` / `move_to_front` / `iterative_deepen`；⑦`PieceType::value()` 删除，走子排序统一使用 `GameConfig.piece_values`（修复 4x4 变体下排序分值与扣血不一致） | 全库（env / mcts / expectimax） |
 | 2026-09-13 | 变体常量去重：删除 `env/constants.rs`（4x8 硬编码重复常量，仅方向常量移入 `bitboard.rs`）；`GameEnv::max_steps` 由关联函数改为 `&self` 方法、由 `config.max_steps_per_episode` 驱动（`banqi-engine` 策略 / `banqi-collector` 自对弈同步改用 `env.config`，不再依赖 4x8 编译期常量） | `env/mod.rs`、`env/bitboard.rs`、`env/traits.rs`、`env/variants/*` |
 | 2026-09-14 | `DarkChessEnv` 新增只读访问器 `get_last_action()`（产生当前局面的最后一步动作，初始局面返回 `None`；供 GUI 还原 MCTS 树节点的到达着法） | `env/board/accessors.rs` |
+| 2026-09-14 | 代码质量重构（一）：①新增 `env/error.rs::EnvError`，`GameEnv::step` 与 `DarkChessEnv::step` 错误类型由 `String` 改为 `EnvError`（`IllegalAction` / `BrokenInvariant`），`reveal_piece_at` 改为返回 `Result`，环境层热路径消除 `panic!`/`expect`；②MCTS 拆分 `search.rs`（681 行）为 `search.rs`（结构体 + `step_next`）/ `root.rs` / `path_select.rs` / `run.rs`，并将 `select_path_collect`（203 行）与 `run`（138 行）拆为多个辅助方法；③`tree.rs` 的 `get_node_idx_by_path` / `backprop_from_path` 改为返回 `Option`，消除路径缺失时的 panic；④`sampling.rs` 的 `sample_outcome_id` 改为 `sample_outcome`（返回 `(outcome_id, 子节点索引)`，单次查找）；⑤expectimax 拆分 `search.rs`（594 行）为 `search.rs`（入口 + Lazy SMP）/ `negamax.rs` / `iterative.rs` / `eval.rs` / `config.rs`；⑥新增 `Variant` 枚举（变体↔字符串↔棋盘尺寸↔配置单一真源），`GameConfig` 新增 `variant` 字段、`make_config` 改由变体推导行列；⑦新增契约测试 `variant_single_source_of_truth` / `illegal_action_returns_structured_error` | 全库（env / mcts / expectimax）；破坏性：`GameEnv::step` 错误类型变更，engine / collector / gui 已同步 |
+| 2026-09-14 | `Variant` 变体成员定名 `DarkChess4x2`（原 `MiniDarkChess4x2`），字符串标识固定为 `"4x8"` / `"4x4"` / `"4x2"` 并作为 GUI 与前端共享的唯一变体词表（GUI 不再使用 `"dark"` / `"mini"`） | `env/config.rs`；下游 `banqi-gui`（Rust + `frontend/src`）已同步 |
 
 ---
 
@@ -63,7 +65,8 @@ src/
     env/                      # 游戏环境（规则 / 状态 / 走子 / 特征 / 变体）
       mod.rs                  # 声明 + 公共 re-export
       types.rs                # PieceType / Player / Piece / Slot / Move / ResNetObservation
-      config.rs               # GameConfig + 各变体配置（const fn + 共享构建器 make_config）+ 动作计数 + NNUE 布局推导
+      config.rs               # Variant + GameConfig + 各变体配置（const fn + 共享构建器 make_config）+ 动作计数 + NNUE 布局推导
+      error.rs                # EnvError（IllegalAction / BrokenInvariant）
       cache.rs                # 泛型 OnceLock 缓存：global_cache! 宏 + cached() 查/建/插
       traits.rs               # GameEnv trait + DarkChessEnv 实现 + 机会节点扩展点
       rules.rs                # 终局判定 + 动作掩码生成 + 结构化走子生成 + first_blocker
@@ -86,7 +89,10 @@ src/
         tic_tac_toe.rs        # 井字棋（MCTS 泛型验证用，无机会节点）
     mcts/                     # Gumbel AlphaZero MCTS（泛型：G: GameEnv, E: Evaluator<G>）
       mod.rs                  # 声明 + re-export + 模块级注意事项
-      search.rs               # GumbelMCTS 结构体 + 主循环 run / select_path_collect / expand_root
+      search.rs               # GumbelMCTS 结构体定义 + 构造 + 树推进 step_next
+      root.rs                 # 根准备（expand_root / 掩码 / 候选采样）+ 叶子回填 + 结果组装
+      path_select.rs          # 路径选择 select_path_collect（机会/终局/步数兜底/PUCT）
+      run.rs                  # 主搜索循环 run（Sequential Halving 编排与淘汰）
       config.rs               # GumbelConfig / MctsSearchResult
       evaluator.rs            # Evaluator trait / EvaluatorOutput / health_logits_expectation
       node.rs                 # MctsArena(Slab) / MctsNode / value_from_perspective
@@ -99,7 +105,11 @@ src/
       search_tests.rs         # 单元测试
     expectimax/               # Expecti-Alpha-Beta 强搜索（绑定 DarkChessEnv）
       mod.rs                  # ExpectimaxEngine + Ctx + FEAT_* 标志
-      search.rs               # SearchConfig / SearchResult / search / search_par / negamax
+      search.rs               # 搜索入口 search / search_par / Lazy SMP（+ SearchConfig 等再导出）
+      negamax.rs              # 递归主体 negamax / quiesce / Star1 机会节点 / TT 探测与存储
+      iterative.rs            # 迭代加深（根层单层搜索 + 逐层加深）
+      eval.rs                 # 叶评估 eval_state / eval_acc + 增量累加器辅助
+      config.rs               # SearchConfig / SearchResult（经 search 再导出）
       nnue.rs                 # NnueEvaluate / NnueAccumulator trait 契约（+ 测试 Dummy）
       ordering.rs             # 走子排序（MVV-LVA + 杀手 + 历史）+ 终局辅助
       zobrist.rs              # zkey / sym_zkey / TtEntry / 值域常量
@@ -129,7 +139,9 @@ pub mod mcts;
 | `Slot` | `env::types` | `Empty` / `Hidden` / `Revealed(Piece)` |
 | `Move` | `env::types` | 结构化走法：`action / from / to / is_chance / is_capture / is_flip` |
 | `ResNetObservation` | `env::types` | `board: Array3<f32>` (C,H,W) + `scalars: Array1<f32>` |
-| `GameConfig` | `env::config` | `Copy` 纯数据；决定棋盘尺寸 / 子力 / 血量 / 动作空间 / 特征维度 |
+| `GameConfig` | `env::config` | `Copy` 纯数据；决定变体 / 棋盘尺寸 / 子力 / 血量 / 动作空间 / 特征维度（含 `variant: Variant`） |
+| `Variant` | `env::config` | 暗棋变体标识单一真源：`as_str()`（"4x8"/"4x4"/"4x2"）/ `from_str()` / `board_dims()` / `config()` |
+| `EnvError` | `env::error` | `step` 错误类型：`IllegalAction` / `BrokenInvariant`（实现 `Display` + `std::error::Error`） |
 | `darkchess_config` / `game_4x4_config` / `mini_config` | `env::config` | 三种暗棋变体配置 |
 | `compute_action_counts` | `env::config` | 由 `(rows, cols)` 推导 `(reveal, regular, cannon)` 计数 |
 | `DarkChessEnv` | `env::board` | `Copy` 环境，config 驱动；所有数组按 `MAX_*` 上界分配 |
@@ -191,7 +203,8 @@ pub mod mcts;
 `env::traits::GameEnv` 是 MCTS 泛型化的唯一约束，要求 `Copy + Clone + Send + Sync + 'static`：
 
 - 无关联形状常量：棋盘行列 / 通道数 / 标量数 / 步数上限均由运行时 `config` 决定（不设编译期变体常量）；
-- 核心方法：`action_space_size(&self)`、`get_current_player()`、`action_masks_into()`、`step()`、`check_game_over_conditions()`、`max_steps(&self)`、`encode_resnet_features_flat_into()`；`get_resnet_state()` 为必需方法（`DarkChessEnv` 由 `config` 推导形状，变体转发 inner，`TicTacToeEnv` 用自身常量）；
+- 核心方法：`action_space_size(&self)`、`get_current_player()`、`action_masks_into()`、`step() -> Result<..., EnvError>`、`check_game_over_conditions()`、`max_steps(&self)`、`encode_resnet_features_flat_into()`；`get_resnet_state()` 为必需方法（`DarkChessEnv` 由 `config` 推导形状，变体转发 inner，`TicTacToeEnv` 用自身常量）；
+- `step` 返回结构化 `EnvError`：非法/越界动作为 `IllegalAction`，内部不变量破坏（源格非明子、阵亡池溢出、翻子后仍为暗子、隐藏池与指定棋子不匹配）为 `BrokenInvariant`；环境层热路径不再以 `panic!`/`expect` 中断搜索；
 - **机会节点扩展点**（暗棋特有，默认关闭）：`is_chance_action()` / `chance_outcomes()` / `step_outcome_id()`。`DarkChessEnv`、`Game4x4Env`、`MiniDarkChessEnv` 覆盖实现；`TicTacToeEnv` 保持默认（无机会节点）；
 - 终局血量辅助：`terminal_health_diff_red()` / `terminal_health_diff_red_int()` / `health_diff_scale()`，供 MCTS 血量复合效用使用。
 
@@ -261,7 +274,10 @@ Gumbel AlphaZero 风格的 MCTS，泛型化于 `G: GameEnv`，通过 `Evaluator<
 
 | 文件 | 职责 |
 |------|------|
-| `search.rs` | 搜索器结构体 + 主循环（`run` / `select_path_collect` / `expand_root` / `step_next` / `completed_q` / `completed_utility`）；run 与 batched 共用的根准备 / 回填 / 结果组装（`refresh_root_action_mask` / `root_logits` / `sample_root_candidates` / `apply_root_eval` / `apply_leaf_evals` / `build_result`） |
+| `search.rs` | 搜索器结构体定义 + 构造 + 树推进（`step_next` / `root_env`） |
+| `root.rs` | 根侧逻辑（run 与 batched 共用）：`expand_root` / `refresh_root_action_mask` / `root_logits` / `sample_root_candidates` / `apply_root_eval` / `apply_leaf_evals` / `completed_q` / `completed_utility` / `build_result` |
+| `path_select.rs` | 路径选择 `select_path_collect`（机会节点处理、终局回传、步数上限兜底、PUCT 子节点选择） |
+| `run.rs` | 主循环 `run`（Sequential Halving 编排：阶段执行 / 批量评估回填 / 候选淘汰 / 空转告警 / 终局动作） |
 | `tree.rs` | 树构建与回溯（`build_children_from_eval` / `expand_chance_node` / `backprop_from_path` / `backprop_evals` / `node_q_value` / `node_utility_value`） |
 | `policy.rs` | 只读策略计算（`compute_probs_from_logits` / `get_root_probabilities` / `get_improved_policy`） |
 | `sampling.rs` | Gumbel Top-K / 机会结果采样 |
@@ -318,6 +334,8 @@ Star1 概率节点剪枝的 Expecti-Alpha-Beta 强搜索，绑定 `DarkChessEnv`
 - `ordering.rs`：`order_key` 优先级 = 吃子 MVV-LVA > 杀手 > 历史静走 > 炮吃暗子（机会）> 翻棋垫底；MVV-LVA 的棋子分值统一取 `GameConfig.piece_values`（与运行时扣血同源）；`terminal_value` / `terminal_info` / `victim_value`。
 - `zobrist.rs`：`zkey` = 棋盘槽位 + 暗子袋（按颜色/类型计数）+ 走子方；**和棋时钟不参与哈希**（换取更多 TT 命中）；`sym_zkey` 为对称视角键；随机数用 SplitMix64，跨运行确定。
 - `smp.rs`：`SharedTT` 将表项打包为单个 `AtomicU64`（value | depth | flag | key_check），best 提示独立 `AtomicU32`；写入 last-write-wins。
+
+实现分文件（`search.rs` 为入口）：`negamax.rs`（`negamax` / `quiesce` / `flip_value` / `move_value` / TT 探测与存储 / `search_ordered_moves`）、`iterative.rs`（`best_at_depth` / `iterative_deepen` / `move_to_front`）、`eval.rs`（`eval_state` / `eval_acc` / `step_with_acc` / `outcome_acc`）、`config.rs`（`SearchConfig` / `SearchResult`，经 `search` 再导出）。
 
 ---
 

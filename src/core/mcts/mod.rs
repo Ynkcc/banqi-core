@@ -13,11 +13,14 @@
 // 3. 同步执行: 无异步/递归，直接持有模型
 // 4. 确定性动作选择: 最终选择 completed_Q 最高的动作
 // 模块分层：
-// - path:      路径类型定义（PathStep / SelectPathOutcome / PendingEval）
-// - search:    搜索器结构体与主搜索循环（run / select_path_collect / expand_root）
-// - sampling:  Gumbel Top-K 采样与机会结果采样
-// - tree:      树构建与价值回溯（子节点扩展 / 机会节点展开 / backprop）
-// - policy:    策略计算（概率分布 / 根策略 / 改进策略）
+// - path:        路径类型定义（PathStep / SelectPathOutcome / PendingEval）
+// - search:      搜索器结构体定义、构造与树推进（step_next）
+// - root:        根准备 / 叶子回填 / 结果组装
+// - path_select: 路径选择（select_path_collect）
+// - run:         主搜索循环（Sequential Halving 编排）
+// - sampling:    Gumbel Top-K 采样与机会结果采样
+// - tree:        树构建与价值回溯（子节点扩展 / 机会节点展开 / backprop）
+// - policy:      策略计算（概率分布 / 根策略 / 改进策略）
 pub mod batched;
 pub mod budget;
 pub mod config;
@@ -28,6 +31,10 @@ pub mod policy;
 pub mod sampling;
 pub mod search;
 pub mod tree;
+
+mod path_select;
+mod root;
+mod run;
 
 #[cfg(test)]
 mod search_tests;

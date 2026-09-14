@@ -88,9 +88,68 @@ pub const fn compute_action_counts(rows: usize, cols: usize) -> (usize, usize, u
     (reveal, regular, cannon)
 }
 
+/// 暗棋变体标识：变体 ↔ 棋盘尺寸 ↔ 配置函数的单一真源。
+///
+/// 上游（GUI / 调度器 / 前端）以 `as_str()` 作为稳定标识交换，避免各自
+/// 反推行列或重复维护映射表。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Variant {
+    /// 4x8 标准暗棋（7 类棋子全激活，每方 16 子）。
+    DarkChess4x8,
+    /// 4x4 暗棋（7 类棋子全激活，每方 8 子）。
+    DarkChess4x4,
+    /// 4x2 迷你暗棋（兵/炮/士/将，每方 4 子）。
+    DarkChess4x2,
+}
+
+impl Variant {
+    /// 全部暗棋变体（不含井字棋，后者不使用 `GameConfig`）。
+    pub const ALL: [Variant; 3] = [
+        Variant::DarkChess4x8,
+        Variant::DarkChess4x4,
+        Variant::DarkChess4x2,
+    ];
+
+    /// 稳定字符串标识（与前端 / 调度器 `SCHEDULER_VARIANT` 约定一致）。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Variant::DarkChess4x8 => "4x8",
+            Variant::DarkChess4x4 => "4x4",
+            Variant::DarkChess4x2 => "4x2",
+        }
+    }
+
+    /// 由字符串标识还原变体。
+    pub fn from_str(s: &str) -> Option<Variant> {
+        Variant::ALL.iter().copied().find(|v| v.as_str() == s)
+    }
+
+    /// 该变体的棋盘行列（尺寸唯一真源）。
+    pub const fn board_dims(self) -> (usize, usize) {
+        match self {
+            Variant::DarkChess4x8 => (4, 8),
+            Variant::DarkChess4x4 => (4, 4),
+            Variant::DarkChess4x2 => (4, 2),
+        }
+    }
+
+    /// 该变体的基准配置（初始预翻棋子数等可按需覆写）。
+    pub const fn config(self) -> GameConfig {
+        match self {
+            Variant::DarkChess4x8 => darkchess_config(),
+            Variant::DarkChess4x4 => game_4x4_config(),
+            Variant::DarkChess4x2 => mini_config(),
+        }
+    }
+}
+
 /// 一局游戏的完整配置（Copy 纯数据）。
 #[derive(Clone, Copy, Debug)]
 pub struct GameConfig {
+    // --- 变体标识 ---
+    /// 所属暗棋变体（尺寸 / 标识的单一真源）。
+    pub variant: Variant,
+
     // --- 棋盘尺寸 ---
     pub rows: usize,
     pub cols: usize,
@@ -186,11 +245,10 @@ impl GameConfig {
     }
 }
 
-/// 共享配置构建器：派生 total_positions / 动作计数 / 特征维度等统一字段，
-/// 变体只需提供棋盘尺寸与子力/规则差异（特征维度单一真源在此）。
+/// 共享配置构建器：由变体推导棋盘尺寸，并派生 total_positions / 动作计数 /
+/// 特征维度等统一字段；变体只需提供子力/规则差异（特征维度单一真源在此）。
 const fn make_config(
-    rows: usize,
-    cols: usize,
+    variant: Variant,
     active_types: [usize; NUM_PIECE_TYPES_MAX],
     num_active: usize,
     piece_counts: [usize; NUM_PIECE_TYPES_MAX],
@@ -200,9 +258,11 @@ const fn make_config(
     max_consecutive_moves_for_draw: usize,
     max_steps_per_episode: usize,
 ) -> GameConfig {
+    let (rows, cols) = variant.board_dims();
     let (reveal, regular, cannon) = compute_action_counts(rows, cols);
     let total_pieces = sum_counts(&piece_counts);
     GameConfig {
+        variant,
         rows,
         cols,
         total_positions: rows * cols,
@@ -229,8 +289,7 @@ const fn make_config(
 /// 4x8 暗棋配置（回归基准，行为与原 constants.rs 完全一致）。
 pub const fn darkchess_config() -> GameConfig {
     make_config(
-        4,
-        8,
+        Variant::DarkChess4x8,
         [0, 1, 2, 3, 4, 5, 6],                    // Soldier..General
         7,
         [5, 2, 2, 2, 2, 2, 1],                    // 兵/炮/马/车/象/士/将
@@ -255,8 +314,7 @@ pub const fn darkchess_config() -> GameConfig {
 /// | 将   | 30   | 1      |
 pub const fn game_4x4_config() -> GameConfig {
     make_config(
-        4,
-        4,
+        Variant::DarkChess4x4,
         [0, 1, 2, 3, 4, 5, 6],                    // Soldier..General
         7,
         [2, 1, 1, 1, 1, 1, 1],                    // 兵2 炮1 马1 车1 象1 士1 将1
@@ -272,8 +330,7 @@ pub const fn game_4x4_config() -> GameConfig {
 /// 变体规则：连续未吃子步数达到 8 则强制判和。
 pub const fn mini_config() -> GameConfig {
     make_config(
-        4,
-        2,
+        Variant::DarkChess4x2,
         [0, 1, 5, 6, 0, 0, 0],                    // Soldier/Cannon/Advisor/General
         4,
         [1, 1, 0, 0, 0, 1, 1],                    // 每方：兵1 炮1 士1 将1
@@ -283,4 +340,35 @@ pub const fn mini_config() -> GameConfig {
         8,                                        // 未吃子步数为 8 时强制判和
         30,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 变体标识 / 棋盘尺寸 / 配置 三者一致且互不冲突（单一真源契约）。
+    #[test]
+    fn variant_single_source_of_truth() {
+        for v in Variant::ALL {
+            assert_eq!(Variant::from_str(v.as_str()), Some(v));
+            let cfg = v.config();
+            assert_eq!(cfg.variant, v);
+            assert_eq!((cfg.rows, cfg.cols), v.board_dims());
+            assert_eq!(cfg.total_positions, cfg.rows * cfg.cols);
+
+            // 动作空间计数与共享构建器逐项一致（动作序契约的前提）。
+            let (reveal, regular, cannon) = compute_action_counts(cfg.rows, cfg.cols);
+            assert_eq!(cfg.reveal_actions_count, reveal);
+            assert_eq!(cfg.regular_move_actions_count, regular);
+            assert_eq!(cfg.cannon_attack_actions_count, cannon);
+            assert_eq!(cfg.action_space_size, reveal + regular + cannon);
+        }
+        assert_eq!(Variant::from_str("unknown"), None);
+
+        // 棋盘尺寸唯一（禁止两个变体共用行列，否则上游无法用字符串区分）。
+        let mut dims: Vec<(usize, usize)> = Variant::ALL.iter().map(|v| v.board_dims()).collect();
+        dims.sort_unstable();
+        dims.dedup();
+        assert_eq!(dims.len(), Variant::ALL.len());
+    }
 }

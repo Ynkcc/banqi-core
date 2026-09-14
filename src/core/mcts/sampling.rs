@@ -48,26 +48,25 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
 
     /// 从机会节点的可能结果中采样
     ///
-    /// 根据各种结果的概率分布，随机采样一个结果 ID。
+    /// 根据各种结果的概率分布，随机采样一个结果，返回
+    /// `(outcome_id, 子节点索引)`。空列表返回 None。
     /// 主要用于模拟阶段，决定在机会节点走向哪个分支。
-    pub(crate) fn sample_outcome_id(
+    pub(crate) fn sample_outcome(
         outcomes: &[(usize, f32, usize)],
         rng: &mut impl Rng,
-    ) -> Option<usize> {
-        if outcomes.is_empty() {
-            return None;
-        }
+    ) -> Option<(usize, usize)> {
+        let first = outcomes.first().map(|(id, _, idx)| (*id, *idx))?;
         let total: f32 = outcomes.iter().map(|(_, p, _)| p).sum();
         if total <= 0.0 {
-            return outcomes.first().map(|(id, _, _)| *id);
+            return Some(first);
         }
         let mut pick = rng.gen_range(0.0..1.0) * total;
-        for (outcome_id, prob, _) in outcomes {
+        for (outcome_id, prob, idx) in outcomes {
             pick -= *prob;
             if pick <= 0.0 {
-                return Some(*outcome_id);
+                return Some((*outcome_id, *idx));
             }
         }
-        outcomes.first().map(|(id, _, _)| *id)
+        Some(first)
     }
 }

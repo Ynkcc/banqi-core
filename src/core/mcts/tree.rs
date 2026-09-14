@@ -13,33 +13,35 @@ use crate::core::env::GameEnv;
 use crate::core::env::Player;
 
 impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
-    /// 根据路径获取可变节点引用
+    /// 根据路径获取节点索引
     ///
-    /// 从根节点开始，沿着 `path` 遍历树，返回目标节点的索引。
-    ///
-    /// # Panics
-    ///
-    /// 如果路径中的任何一步在树中不存在，则会 panic。
-    /// (在正常逻辑中，路径应该主要来自于树中已存在的节点，或者是刚刚扩展的节点)
+    /// 从根节点开始，沿着 `path` 遍历树，返回目标节点索引；
+    /// 路径中任一步在树中不存在时返回 None（调用方据此跳过该条目）。
     pub(crate) fn get_node_idx_by_path(
         arena: &MctsArena<G>,
         mut current_idx: usize,
         path: &[PathStep],
-    ) -> usize {
+    ) -> Option<usize> {
         for step in path {
             let current = arena.get(current_idx);
             match *step {
                 PathStep::Action(action) => {
-                    current_idx = current.child_idx(action).expect("Path action not found");
+                    let Some(next) = current.child_idx(action) else {
+                        eprintln!("⚠️ MCTS: 路径子节点缺失 (action={})", action);
+                        return None;
+                    };
+                    current_idx = next;
                 }
                 PathStep::ChanceOutcome(outcome_id) => {
-                    current_idx = current
-                        .outcome_idx(outcome_id)
-                        .expect("Path outcome not found");
+                    let Some(next) = current.outcome_idx(outcome_id) else {
+                        eprintln!("⚠️ MCTS: 路径机会结果缺失 (outcome={})", outcome_id);
+                        return None;
+                    };
+                    current_idx = next;
                 }
             }
         }
-        current_idx
+        Some(current_idx)
     }
 
     /// 从叶子节点向上回溯更新价值
@@ -56,8 +58,8 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
     ///
     /// # 返回
     ///
-    /// 返回 `(从当前节点视角看到的价值, 从当前节点视角看到的血量期望)`，
-    /// 均已根据玩家视角翻转。
+    /// 返回 `Some((从当前节点视角看到的价值, 从当前节点视角看到的血量期望))`，
+    /// 均已根据玩家视角翻转；路径断裂时返回 None。
     pub(crate) fn backprop_from_path(
         arena: &mut MctsArena<G>,
         node_idx: usize,
@@ -65,7 +67,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         leaf_player: Player,
         leaf_value: f32,
         leaf_health: f32,
-    ) -> (f32, f32) {
+    ) -> Option<(f32, f32)> {
         if path.is_empty() {
             // 到达目标节点（叶子节点）
             let node = arena.get_mut(node_idx);
@@ -74,7 +76,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
             node.visit_count += 1;
             node.value_sum += value;
             node.health_sum += health;
-            return (value, health);
+            return Some((value, health));
         }
 
         let first_step = path[0];
@@ -84,8 +86,10 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         // get_node_idx_by_path 再次沿路径查找同一子节点。
         let (child_value, child_health, child_player) = match first_step {
             PathStep::Action(action) => {
-                let current = arena.get(node_idx);
-                let child_idx = current.child_idx(action).expect("Backprop child not found");
+                let Some(child_idx) = arena.get(node_idx).child_idx(action) else {
+                    eprintln!("⚠️ MCTS: backprop 子节点缺失 (action={})", action);
+                    return None;
+                };
                 let child_player = arena.get(child_idx).player();
                 let (v, h) = Self::backprop_from_path(
                     arena,
@@ -94,14 +98,14 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                     leaf_player,
                     leaf_value,
                     leaf_health,
-                );
+                )?;
                 (v, h, child_player)
             }
             PathStep::ChanceOutcome(outcome_id) => {
-                let current = arena.get(node_idx);
-                let child_idx = current
-                    .outcome_idx(outcome_id)
-                    .expect("Backprop outcome not found");
+                let Some(child_idx) = arena.get(node_idx).outcome_idx(outcome_id) else {
+                    eprintln!("⚠️ MCTS: backprop 机会结果缺失 (outcome={})", outcome_id);
+                    return None;
+                };
                 let child_player = arena.get(child_idx).player();
                 let (v, h) = Self::backprop_from_path(
                     arena,
@@ -110,7 +114,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                     leaf_player,
                     leaf_value,
                     leaf_health,
-                );
+                )?;
                 (v, h, child_player)
             }
         };
@@ -123,7 +127,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         node.visit_count += 1;
         node.value_sum += my_value;
         node.health_sum += my_health;
-        (my_value, my_health)
+        Some((my_value, my_health))
     }
 
     /// 应用一批评估结果的价值回传
@@ -150,7 +154,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         for (pending, value, health) in evals {
             match pending.chance_seed {
                 None => {
-                    Self::backprop_from_path(
+                    let _ = Self::backprop_from_path(
                         arena,
                         root_idx,
                         &pending.path,
@@ -165,8 +169,11 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                     prefix_len,
                 }) => {
                     // outcome 子节点自身统计：整数访问，与普通叶子一致
-                    let leaf_idx =
-                        Self::get_node_idx_by_path(arena, root_idx, &pending.path);
+                    let Some(leaf_idx) =
+                        Self::get_node_idx_by_path(arena, root_idx, &pending.path)
+                    else {
+                        continue;
+                    };
                     {
                         let leaf = arena.get_mut(leaf_idx);
                         leaf.visit_count += 1;
@@ -198,7 +205,8 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         // 每个机会节点一次加权种子回传：机会节点 +1 访问 / +\sum p_i·v_i，
         // 其祖先同样获得单次加权回传（替代原先 14 次整数回传）。
         for (_, b) in bursts {
-            Self::backprop_from_path(arena, root_idx, &b.prefix, b.player, b.value, b.health);
+            let _ =
+                Self::backprop_from_path(arena, root_idx, &b.prefix, b.player, b.value, b.health);
         }
     }
 
@@ -338,11 +346,11 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
     ///
     /// 大语言模型注意: 不要修改此处的全量展开逻辑。
     pub(crate) fn expand_chance_node(arena: &mut MctsArena<G>, node_idx: usize, action: usize) {
-        let env = *arena
-            .get(node_idx)
-            .env
-            .as_ref()
-            .expect("Chance node must have env");
+        let Some(env) = arena.get(node_idx).env else {
+            eprintln!("⚠️ MCTS: 机会节点缺少环境 (node={})", node_idx);
+            arena.get_mut(node_idx).is_expanded = true;
+            return;
+        };
         let outcomes = env.chance_outcomes(action);
 
         if outcomes.is_empty() {

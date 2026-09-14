@@ -2,6 +2,7 @@
 // 核心 step 逻辑、走子应用、机会节点扩展、棋盘打印。
 
 use super::*;
+use crate::core::env::error::EnvError;
 use crate::core::env::traits::get_outcome_id;
 
 impl DarkChessEnv {
@@ -10,12 +11,12 @@ impl DarkChessEnv {
         &mut self,
         action: usize,
         reveal_piece: Option<Piece>,
-    ) -> Result<(f32, bool, bool, Option<i32>), String> {
+    ) -> Result<(f32, bool, bool, Option<i32>), EnvError> {
         // 动作空间大小随 config 变化，使用 Vec（无法用编译期定长栈数组）
         let mut masks = vec![0i32; self.config.action_space_size];
         self.action_masks_into(&mut masks);
-        if masks[action] == 0 {
-            return Err(format!("无效动作: {}", action));
+        if masks.get(action).copied().unwrap_or(0) == 0 {
+            return Err(EnvError::IllegalAction { action });
         }
 
         self.last_action = action as i32;
@@ -25,13 +26,13 @@ impl DarkChessEnv {
 
         if action < self.config.reveal_actions_count {
             let sq = lookup.action_to_coords[action][0];
-            self.reveal_piece_at(sq, reveal_piece);
+            self.reveal_piece_at(sq, reveal_piece)?;
             self.move_counter = 0;
         } else {
             let coords = &lookup.action_to_coords[action];
             let from_sq = coords[0];
             let to_sq = coords[1];
-            self.apply_move_action(from_sq, to_sq, reveal_piece);
+            self.apply_move_action(from_sq, to_sq, reveal_piece)?;
         }
 
         self.current_player = self.current_player.opposite();
@@ -39,14 +40,23 @@ impl DarkChessEnv {
         Ok((0.0, terminated, truncated, winner))
     }
 
-    fn apply_move_action(&mut self, from_sq: usize, to_sq: usize, reveal_piece: Option<Piece>) {
+    fn apply_move_action(
+        &mut self,
+        from_sq: usize,
+        to_sq: usize,
+        reveal_piece: Option<Piece>,
+    ) -> Result<(), EnvError> {
         let attacker = match std::mem::replace(&mut self.board[from_sq], Slot::Empty) {
             Slot::Revealed(p) => p,
-            _ => panic!("Move action source is not a revealed piece!"),
+            _ => {
+                return Err(EnvError::BrokenInvariant {
+                    context: "走子源格不是明子",
+                });
+            }
         };
 
         if matches!(self.board[to_sq], Slot::Hidden) {
-            self.reveal_piece_at(to_sq, reveal_piece);
+            self.reveal_piece_at(to_sq, reveal_piece)?;
         }
 
         let attacker_mask = ull(from_sq);
@@ -86,7 +96,9 @@ impl DarkChessEnv {
                     self.dead_pieces_count[victim_idx] += 1;
                     self.dead_piece_counts_by_type[victim_idx][defender.piece_type as usize] += 1;
                 } else {
-                    panic!("Dead pieces buffer overflow!");
+                    return Err(EnvError::BrokenInvariant {
+                        context: "阵亡棋子池溢出",
+                    });
                 }
                 let score = &mut self.scores[defender.player.idx()];
                 // 吃子扣血：分值为变体可配置（config.piece_values），不再用硬编码 value()。
@@ -94,9 +106,12 @@ impl DarkChessEnv {
                 self.move_counter = 0;
             }
             Slot::Hidden => {
-                panic!("Unexpected Hidden slot after reveal");
+                return Err(EnvError::BrokenInvariant {
+                    context: "翻子后目标格仍为暗子",
+                });
             }
         }
+        Ok(())
     }
 
     pub fn get_target_slot(&self, action: usize) -> Slot {
@@ -121,28 +136,38 @@ impl DarkChessEnv {
     /// 枚举机会动作的所有可能结果：`(outcome_id, 概率, 结果环境)`。
     pub fn chance_outcomes(&self, action: usize) -> Vec<(usize, f32, Self)> {
         let cfg = &self.config;
-        let mut counts = vec![0usize; cfg.reveal_probability_size];
-        for p in self.get_hidden_pieces_raw() {
-            let id = cfg.outcome_id_for(p.piece_type, p.player == Player::Black);
-            counts[id] += 1;
-        }
-        let total_hidden = self.get_hidden_pieces_raw().len() as f32;
+        let hidden = self.get_hidden_pieces_raw();
+        let total_hidden = hidden.len() as f32;
         if total_hidden == 0.0 {
             return Vec::new();
         }
+        // 单次遍历同时统计计数与每型代表棋子，避免二次扫描与「找不到该型棋子」的不可达分支。
+        let mut counts = vec![0usize; cfg.reveal_probability_size];
+        let mut representative: Vec<Option<Piece>> = vec![None; cfg.reveal_probability_size];
+        for p in hidden {
+            let id = cfg.outcome_id_for(p.piece_type, p.player == Player::Black);
+            counts[id] += 1;
+            if representative[id].is_none() {
+                representative[id] = Some(*p);
+            }
+        }
         let mut outcomes = Vec::new();
         for outcome_id in 0..cfg.reveal_probability_size {
-            if counts[outcome_id] > 0 {
-                let prob = counts[outcome_id] as f32 / total_hidden;
-                let mut next_env = *self;
-                let specific_piece = *self
-                    .get_hidden_pieces_raw()
-                    .iter()
-                    .find(|p| cfg.outcome_id_for(p.piece_type, p.player == Player::Black) == outcome_id)
-                    .expect("Piece not found");
-                let _ = next_env.step(action, Some(specific_piece));
-                outcomes.push((outcome_id, prob, next_env));
+            if counts[outcome_id] == 0 {
+                continue;
             }
+            let Some(specific_piece) = representative[outcome_id] else {
+                continue;
+            };
+            let prob = counts[outcome_id] as f32 / total_hidden;
+            let mut next_env = *self;
+            if let Err(e) = next_env.step(action, Some(specific_piece)) {
+                eprintln!(
+                    "⚠️ chance_outcomes: 结果局面 step 失败 (action={action}, outcome={outcome_id}): {e}"
+                );
+                continue;
+            }
+            outcomes.push((outcome_id, prob, next_env));
         }
         outcomes
     }

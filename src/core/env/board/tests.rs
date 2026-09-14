@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::core::env::traits::GameEnv;
+use crate::core::env::EnvError;
 
 /// 三个变体的观测形状与动作空间必须由 config 决定。
 #[test]
@@ -27,6 +28,28 @@ fn resnet_state_shape_follows_config() {
             env.config.action_space_size
         );
     }
+}
+
+/// 非法动作返回结构化错误而非 panic（越界 + 掩码为 0 两类）。
+#[test]
+fn illegal_action_returns_structured_error() {
+    let mut env = DarkChessEnv::new();
+    env.seed = Some(11);
+    env.reset();
+
+    let out_of_range = env.config.action_space_size + 7;
+    assert_eq!(
+        env.step(out_of_range, None),
+        Err(EnvError::IllegalAction {
+            action: out_of_range
+        })
+    );
+
+    let masks = env.action_masks();
+    let illegal = (0..env.config.action_space_size)
+        .find(|&a| masks[a] == 0)
+        .expect("4x8 开局必有非法动作位");
+    assert_eq!(env.step(illegal, None), Err(EnvError::IllegalAction { action: illegal }));
 }
 
 /// 随机走子对局，持续检查每个观测的 bitboard 一致性。

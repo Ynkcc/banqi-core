@@ -12,6 +12,7 @@
 
 use super::board::DarkChessEnv;
 use super::config::GameConfig;
+use super::error::EnvError;
 use super::types::{ResNetObservation, Piece, Player};
 
 /// 泛型游戏环境：Gumbel MCTS 对其施加的全部约束。
@@ -33,7 +34,7 @@ pub trait GameEnv: Copy + Clone + Send + Sync + 'static {
     /// 观测不随步返回，按需调用 `get_resnet_state()`。
     /// `winner` 使用全局视角：`Some(1)` = 红方/先手胜，`Some(-1)` = 黑方/后手胜，
     /// `Some(0)` = 平局，`None` = 未结束。
-    fn step(&mut self, action: usize) -> Result<(f32, bool, bool, Option<i32>), String>;
+    fn step(&mut self, action: usize) -> Result<(f32, bool, bool, Option<i32>), EnvError>;
 
     /// 获取当前观测（神经网络输入）。
     ///
@@ -122,7 +123,7 @@ impl GameEnv for DarkChessEnv {
         DarkChessEnv::action_masks_into(self, masks);
     }
 
-    fn step(&mut self, action: usize) -> Result<(f32, bool, bool, Option<i32>), String> {
+    fn step(&mut self, action: usize) -> Result<(f32, bool, bool, Option<i32>), EnvError> {
         DarkChessEnv::step(self, action, None)
     }
 

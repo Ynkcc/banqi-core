@@ -53,7 +53,7 @@ macro_rules! impl_darkchess_variant {
             pub fn step(
                 &mut self,
                 action: usize,
-            ) -> Result<(f32, bool, bool, Option<i32>), String> {
+            ) -> Result<(f32, bool, bool, Option<i32>), crate::core::env::EnvError> {
                 self.inner.step(action, None)
             }
 
@@ -114,7 +114,7 @@ macro_rules! impl_darkchess_variant {
                 self.inner.action_masks_into(masks);
             }
 
-            fn step(&mut self, action: usize) -> Result<(f32, bool, bool, Option<i32>), String> {
+            fn step(&mut self, action: usize) -> Result<(f32, bool, bool, Option<i32>), crate::core::env::EnvError> {
                 self.inner.step(action, None)
             }
 

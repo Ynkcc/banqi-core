@@ -8,6 +8,7 @@ pub mod actions;
 pub mod bitboard;
 pub mod board;
 pub mod config;
+pub mod error;
 pub mod features;
 pub mod rules;
 pub mod seed;
@@ -22,8 +23,10 @@ pub mod variants;
 
 pub use config::{
     GameConfig, MAX_PIECES_PER_PLAYER, MAX_POSITIONS, MAX_REVEAL_PROBABILITY_SIZE,
-    NUM_PIECE_TYPES_MAX, compute_action_counts, darkchess_config, game_4x4_config, mini_config,
+    NUM_PIECE_TYPES_MAX, Variant, compute_action_counts, darkchess_config, game_4x4_config,
+    mini_config,
 };
+pub use error::EnvError;
 pub use symmetry::{Symmetry, action_permutation, sq_map, transform_action, transform_board_flat};
 pub use types::{ResNetObservation, Move, Piece, PieceType, Player, Slot};
 pub use board::DarkChessEnv;
