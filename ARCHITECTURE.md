@@ -34,6 +34,7 @@
 | 2026-09-14 | `DarkChessEnv` 新增只读访问器 `get_last_action()`（产生当前局面的最后一步动作，初始局面返回 `None`；供 GUI 还原 MCTS 树节点的到达着法） | `env/board/accessors.rs` |
 | 2026-09-14 | 代码质量重构（一）：①新增 `env/error.rs::EnvError`，`GameEnv::step` 与 `DarkChessEnv::step` 错误类型由 `String` 改为 `EnvError`（`IllegalAction` / `BrokenInvariant`），`reveal_piece_at` 改为返回 `Result`，环境层热路径消除 `panic!`/`expect`；②MCTS 拆分 `search.rs`（681 行）为 `search.rs`（结构体 + `step_next`）/ `root.rs` / `path_select.rs` / `run.rs`，并将 `select_path_collect`（203 行）与 `run`（138 行）拆为多个辅助方法；③`tree.rs` 的 `get_node_idx_by_path` / `backprop_from_path` 改为返回 `Option`，消除路径缺失时的 panic；④`sampling.rs` 的 `sample_outcome_id` 改为 `sample_outcome`（返回 `(outcome_id, 子节点索引)`，单次查找）；⑤expectimax 拆分 `search.rs`（594 行）为 `search.rs`（入口 + Lazy SMP）/ `negamax.rs` / `iterative.rs` / `eval.rs` / `config.rs`；⑥新增 `Variant` 枚举（变体↔字符串↔棋盘尺寸↔配置单一真源），`GameConfig` 新增 `variant` 字段、`make_config` 改由变体推导行列；⑦新增契约测试 `variant_single_source_of_truth` / `illegal_action_returns_structured_error` | 全库（env / mcts / expectimax）；破坏性：`GameEnv::step` 错误类型变更，engine / collector / gui 已同步 |
 | 2026-09-14 | `Variant` 变体成员定名 `DarkChess4x2`（原 `MiniDarkChess4x2`），字符串标识固定为 `"4x8"` / `"4x4"` / `"4x2"` 并作为 GUI 与前端共享的唯一变体词表（GUI 不再使用 `"dark"` / `"mini"`） | `env/config.rs`；下游 `banqi-gui`（Rust + `frontend/src`）已同步 |
+| 2026-09-15 | MCTS 评估契约改为可失败：新增 `mcts::evaluator::EvaluatorError`（实现 `Display` + `Error`）；`Evaluator::evaluate` / `evaluate_logits` 由 `-> EvaluatorOutput` 改为 `-> Result<EvaluatorOutput, EvaluatorError>`；`GumbelMCTS::expand_root` 与 `GumbelMCTS::run` 同步改为 `run() -> Result<Option<MctsSearchResult>, EvaluatorError>`（`Ok(None)` = 无合法动作，`Err` = 评估失败）。目的：推理失败必须显式向上传播，禁止 panic 或静默退化为均匀策略 | `mcts/evaluator.rs`、`mcts/root.rs`、`mcts/run.rs`、`mcts/mod.rs`、`mcts/search_tests.rs`；破坏性：下游 `banqi-engine` / `banqi-collector` / `banqi-gui` 已同步 |
 
 ---
 
@@ -160,7 +161,8 @@ pub mod mcts;
 | `MctsArena<G>` / `MctsNode<G>` | `mcts::node` | 基于 `Slab` 的节点池；节点保存 `env`（值语义快照）、`children`、`possible_states`（机会节点）、`prior/logit`、`value_sum/health_sum` |
 | `GumbelConfig` | `mcts::config` | `num_simulations` / `max_considered_actions` / `c_scale` / `gumbel_scale` / 血量复合效用开关 |
 | `MctsSearchResult` | `mcts::config` | 动作、观测、`improved_policy`、`mcts_value`、`completed_q`、访问数、掩码 |
-| `Evaluator<G>` / `EvaluatorOutput` | `mcts::evaluator` | 批量评估契约；`health` 为可选血量分桶 logits |
+| `Evaluator<G>` / `EvaluatorOutput` | `mcts::evaluator` | 批量评估契约：`evaluate -> Result<EvaluatorOutput, EvaluatorError>`（推理失败必须显式返回错误，不得 panic 或静默退化）；`health` 为可选血量分桶 logits |
+| `EvaluatorError` | `mcts::evaluator` | 批量评估失败（后端报错 / 输出不符契约），实现 `Display` + `Error` |
 | `PathStep` / `PendingEval<G>` / `ChanceSeed` | `mcts::path` | 路径步骤、待评估叶子、机会节点加权回传标记 |
 | `SequentialHalvingBudget` | `mcts::budget` | 分阶段预算排程与淘汰计数 |
 | `BatchedTree<'a, G, E>` | `mcts::batched` | 单棵批量自对弈树，`Root/Searching/Ready/Idle` 状态机 |

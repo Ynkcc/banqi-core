@@ -10,7 +10,7 @@
 
 use crate::core::env::{Game4x4Env, GameEnv, Player, TicTacToeEnv, GAME4X4_ACTION_SPACE_SIZE};
 use crate::core::mcts::config::GumbelConfig;
-use crate::core::mcts::evaluator::{Evaluator, EvaluatorOutput};
+use crate::core::mcts::evaluator::{Evaluator, EvaluatorError, EvaluatorOutput};
 use crate::core::mcts::node::MctsArena;
 use crate::core::mcts::search::GumbelMCTS;
 use rand::prelude::*;
@@ -97,14 +97,14 @@ impl TttMinimaxEvaluator {
 }
 
 impl Evaluator<TicTacToeEnv> for TttMinimaxEvaluator {
-    fn evaluate(&self, envs: &[TicTacToeEnv]) -> EvaluatorOutput {
+    fn evaluate(&self, envs: &[TicTacToeEnv]) -> Result<EvaluatorOutput, EvaluatorError> {
         let logits = vec![vec![0.0f32; 9]; envs.len()];
         let mut cache = self.cache.borrow_mut();
         let values: Vec<f32> = envs
             .iter()
             .map(|e| minimax_cached(e, &mut cache) as f32)
             .collect();
-        EvaluatorOutput { logits, values, health: None }
+        Ok(EvaluatorOutput { logits, values, health: None })
     }
 }
 
@@ -135,8 +135,9 @@ fn play_ttt(mcts_is_red: bool, opponent: Opponent, sims: usize) -> i32 {
 
         if mcts_turn {
             let result = match mcts.run() {
-                Some(r) => r,
-                None => break, // 无合法动作（不应发生）
+                Ok(Some(r)) => r,
+                Ok(None) => break, // 无合法动作（不应发生）
+                Err(e) => panic!("评估失败: {e}"),
             };
             let action = result.action;
             let (_, term, _, winner) = env.step(action).unwrap();
@@ -252,7 +253,7 @@ fn ttt_mcts_single_step_matches_minimax() {
                     ..Default::default()
                 };
                 let mut mcts = GumbelMCTS::new(&env, &eval, config);
-                if let Some(r) = mcts.run() {
+                if let Ok(Some(r)) = mcts.run() {
                     let mcts_optimal_set: HashSet<usize> =
                         optimal_set(&env).into_iter().collect();
                     if mcts_optimal_set.contains(&r.action) {
@@ -325,7 +326,10 @@ fn ttt_mcts_initial_search_produces_valid_action() {
     };
     let env = TicTacToeEnv::new();
     let mut mcts = GumbelMCTS::new(&env, &evaluator, config);
-    let result = mcts.run().expect("空棋盘应有合法动作");
+    let result = mcts
+        .run()
+        .expect("评估不应失败")
+        .expect("空棋盘应有合法动作");
 
     assert!(result.action < 9);
     let mut masks = [0i32; 9];
@@ -364,7 +368,7 @@ impl Random4x4Evaluator {
 }
 
 impl Evaluator<Game4x4Env> for Random4x4Evaluator {
-    fn evaluate(&self, envs: &[Game4x4Env]) -> EvaluatorOutput {
+    fn evaluate(&self, envs: &[Game4x4Env]) -> Result<EvaluatorOutput, EvaluatorError> {
         let mut rng = self.rng.borrow_mut();
         let logits = (0..envs.len())
             .map(|_| {
@@ -376,11 +380,11 @@ impl Evaluator<Game4x4Env> for Random4x4Evaluator {
         let values = (0..envs.len())
             .map(|_| rng.r#gen::<f32>() * 2.0 - 1.0)
             .collect();
-        EvaluatorOutput {
+        Ok(EvaluatorOutput {
             logits,
             values,
             health: None,
-        }
+        })
     }
 }
 
@@ -427,8 +431,9 @@ fn play_game4x4_reuse(model_seed: u64, sims: usize) -> (usize, usize) {
             break;
         }
         let result = match mcts.run() {
-            Some(r) => r,
-            None => break,
+            Ok(Some(r)) => r,
+            Ok(None) => break,
+            Err(e) => panic!("评估失败: {e}"),
         };
         let action = result.action;
 

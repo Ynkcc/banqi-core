@@ -1,7 +1,47 @@
 // src/mcts/evaluator.rs
 // 神经网络评估接口定义（泛型化：G = 游戏环境）
 
+use std::fmt;
+
 use crate::core::env::GameEnv;
+
+/// 批量评估失败：推理后端报错，或模型输出不符合前向契约（形状/输出结构）。
+///
+/// `evaluate` 返回 `Result` 而非直接 panic / 退化为均匀策略：
+/// 推理失败必须显式向上传播，由调用方决定重试或终止本批次；
+/// 静默退化会让自对弈数据质量无声下降。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvaluatorError(String);
+
+impl EvaluatorError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+
+    pub fn message(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for EvaluatorError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "评估失败: {}", self.0)
+    }
+}
+
+impl std::error::Error for EvaluatorError {}
+
+impl From<String> for EvaluatorError {
+    fn from(message: String) -> Self {
+        Self(message)
+    }
+}
+
+impl From<&str> for EvaluatorError {
+    fn from(message: &str) -> Self {
+        Self(message.to_string())
+    }
+}
 
 /// 评估器输出：统一承载策略 logits、胜率与可选的「血量差异分桶 logits」。
 ///
@@ -119,22 +159,16 @@ pub trait Evaluator<G: GameEnv> {
     /// * `logits`: 每个环境的动作原始 Logits（未 mask/softmax）
     /// * `values`: 每个环境的状态价值
     /// * `health`: 每个环境的血量差异分桶 Logits（可选）
-    fn evaluate(&self, envs: &[G]) -> EvaluatorOutput;
+    ///
+    /// 推理失败或输出不符合契约时返回 `Err(EvaluatorError)`，不得 panic，
+    /// 也不得静默返回退化结果。
+    fn evaluate(&self, envs: &[G]) -> Result<EvaluatorOutput, EvaluatorError>;
 
     /// 评估并返回 Logits 和 Value
     ///
     /// 默认实现直接返回 `evaluate` 的结果。
     /// Logits 用于 Gumbel 分布的采样。
-    ///
-    /// # 参数
-    ///
-    /// * `envs` - 需要评估的 `G` 列表
-    ///
-    /// # 返回
-    ///
-    /// * `logits`: 每个环境的动作对数概率
-    /// * `values`: 每个环境的状态价值
-    fn evaluate_logits(&self, envs: &[G]) -> EvaluatorOutput {
+    fn evaluate_logits(&self, envs: &[G]) -> Result<EvaluatorOutput, EvaluatorError> {
         self.evaluate(envs)
     }
 }

@@ -9,7 +9,7 @@
 use crate::core::env::GameEnv;
 
 use super::config::MctsSearchResult;
-use super::evaluator::Evaluator;
+use super::evaluator::{Evaluator, EvaluatorError};
 use super::node::value_from_perspective;
 use super::path::PendingEval;
 use super::search::GumbelMCTS;
@@ -60,22 +60,23 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
     ///
     /// 在搜索开始前，确保根节点已经被评估和扩展。
     /// 根节点缺失环境（不应发生）时打印错误并跳过，交由调用方按空掩码处理。
-    pub(crate) fn expand_root(&mut self) {
+    pub(crate) fn expand_root(&mut self) -> Result<(), EvaluatorError> {
         if self.arena.get(self.root_idx).is_expanded {
-            return;
+            return Ok(());
         }
 
         let Some(env) = self.root_env_copied() else {
             eprintln!("⚠️ MCTS: 根节点缺少环境，跳过根展开");
-            return;
+            return Ok(());
         };
-        let out = self.evaluator.evaluate(std::slice::from_ref(&env));
+        let out = self.evaluator.evaluate(std::slice::from_ref(&env))?;
         let health_mu = if self.config.health_enabled {
             out.health_expectation(0).unwrap_or(0.0)
         } else {
             0.0
         };
         self.apply_root_eval(&out.logits[0], out.values[0], health_mu);
+        Ok(())
     }
 
     /// 刷新根动作掩码（run 与 batched 根准备共用）。
