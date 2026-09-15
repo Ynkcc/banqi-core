@@ -15,7 +15,7 @@
 // 4x4 方盘用全部 8 个 D4 对称）。本模块不限定可用集，只提供几何变换。
 // ==============================================================================
 
-use super::actions::{action_lookup_tables, pack_coords, ActionLookupTables};
+use super::actions::{action_lookup_tables, pack_coords};
 use super::cache::{cached, global_cache};
 use super::config::GameConfig;
 use std::sync::Arc;
@@ -134,7 +134,7 @@ pub fn action_permutation(cfg: &GameConfig, sym: Symmetry) -> Arc<Vec<usize>> {
 }
 
 fn build_action_permutation(cfg: &GameConfig, sym: Symmetry) -> Vec<usize> {
-    let tables: Arc<ActionLookupTables> = action_lookup_tables(cfg);
+    let tables = action_lookup_tables(cfg);
     let map = sq_map(cfg.rows, cfg.cols, sym);
     let mut perm = vec![0usize; cfg.action_space_size];
     for (a, coords) in tables.action_to_coords.iter().enumerate() {

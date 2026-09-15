@@ -1,6 +1,5 @@
-use super::cache::{cached, global_cache};
+use super::cache::VariantCache;
 use super::config::GameConfig;
-use std::sync::Arc;
 
 // --- 方向常量（棋盘几何，与具体变体无关）---
 pub const DIRECTION_UP: usize = 0;
@@ -77,18 +76,13 @@ pub fn not_file_h(cfg: &GameConfig) -> u64 {
     m & !col_h
 }
 
-/// 缓存键：rows 与 cols 的组合即可唯一确定一张射线表。
-fn ray_key(cfg: &GameConfig) -> u64 {
-    ((cfg.rows as u64) << 16) | (cfg.cols as u64)
-}
-
-global_cache!(RAY_CACHE, ray_cache, Vec<Vec<u64>>);
+/// 射线攻击预计算表（只依赖棋盘尺寸，即变体），进程内每个变体一份。
+static RAY_CACHE: VariantCache<Vec<Vec<u64>>> = VariantCache::new();
 
 /// 射线攻击预计算表：`ray_attacks[dir][sq]` 表示从 sq 沿 dir 方向所有可达格。
 /// dir 约定：0=上, 1=下, 2=左, 3=右。
-pub fn ray_attacks(cfg: &GameConfig) -> Arc<Vec<Vec<u64>>> {
-    let key = ray_key(cfg);
-    cached(ray_cache(), key, || build_ray_attacks(cfg))
+pub fn ray_attacks(cfg: &GameConfig) -> &'static Vec<Vec<u64>> {
+    RAY_CACHE.get(cfg.variant, || build_ray_attacks(cfg))
 }
 
 fn build_ray_attacks(cfg: &GameConfig) -> Vec<Vec<u64>> {

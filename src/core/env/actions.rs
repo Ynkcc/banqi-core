@@ -1,7 +1,6 @@
-use super::cache::{cached, global_cache};
+use super::cache::VariantCache;
 use super::config::GameConfig;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 // ==============================================================================
 // --- 动作预计算表（config 驱动） ---
@@ -25,16 +24,14 @@ pub struct ActionLookupTables {
     pub coords_to_action: HashMap<u64, usize>,
 }
 
-/// 缓存键：rows 与 cols 的组合即可唯一确定一张动作表。
-fn table_key(cfg: &GameConfig) -> u64 {
-    ((cfg.rows as u64) << 16) | (cfg.cols as u64)
-}
+/// 动作预计算表（只依赖棋盘尺寸，即变体），进程内每个变体一份。
+///
+/// 热路径：`get_action_masks_for_player_into` 每次走法生成都会取一次，
+/// 故返回 `&'static`（无锁、无引用计数），见 `cache.rs` 的场景说明。
+static ACTION_TABLE_CACHE: VariantCache<ActionLookupTables> = VariantCache::new();
 
-global_cache!(ACTION_TABLE_CACHE, table_cache, ActionLookupTables);
-
-pub fn action_lookup_tables(cfg: &GameConfig) -> Arc<ActionLookupTables> {
-    let key = table_key(cfg);
-    cached(table_cache(), key, || build_action_lookup_tables(cfg))
+pub fn action_lookup_tables(cfg: &GameConfig) -> &'static ActionLookupTables {
+    ACTION_TABLE_CACHE.get(cfg.variant, || build_action_lookup_tables(cfg))
 }
 
 fn build_action_lookup_tables(cfg: &GameConfig) -> ActionLookupTables {

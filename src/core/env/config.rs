@@ -124,6 +124,15 @@ impl Variant {
         Variant::ALL.iter().copied().find(|v| v.as_str() == s)
     }
 
+    /// 在 `ALL` 中的下标（按变体索引的静态缓存使用；顺序须与 `ALL` 一致）。
+    pub const fn index(self) -> usize {
+        match self {
+            Variant::DarkChess4x8 => 0,
+            Variant::DarkChess4x4 => 1,
+            Variant::DarkChess4x2 => 2,
+        }
+    }
+
     /// 该变体的棋盘行列（尺寸唯一真源）。
     pub const fn board_dims(self) -> (usize, usize) {
         match self {
