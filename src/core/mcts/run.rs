@@ -130,18 +130,16 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
     fn evaluate_and_apply(&mut self, batch: &[PendingEval<G>]) -> Result<(), EvaluatorError> {
         let envs: Vec<G> = batch.iter().map(|pending| pending.env).collect();
         let out = self.evaluator.evaluate(&envs)?;
+        let health_active = self.config.health_active();
         let evals: Vec<(&PendingEval<G>, &[f32], f32, f32)> = batch
             .iter()
             .enumerate()
             .map(|(idx, pending)| {
-                let health_mu = if self.config.health_enabled {
-                    out.health_expectation(idx).unwrap_or(0.0)
-                } else {
-                    0.0
-                };
-                (pending, &out.logits[idx][..], out.values[idx], health_mu)
+                // 血量契约校验（Part C #5）：要求血量输出而评估器没给时硬失败
+                let health_mu = out.health_expectation_required(idx, health_active)?;
+                Ok((pending, &out.logits[idx][..], out.values[idx], health_mu))
             })
-            .collect();
+            .collect::<Result<Vec<_>, EvaluatorError>>()?;
         self.apply_leaf_evals(&evals);
         Ok(())
     }

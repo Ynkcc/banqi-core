@@ -43,7 +43,10 @@ mod search_tests;
 pub use batched::BatchedTree;
 pub use budget::SequentialHalvingBudget;
 pub use config::{GumbelConfig, MctsSearchResult};
-pub use evaluator::{Evaluator, EvaluatorError, EvaluatorOutput, health_logits_expectation};
+pub use evaluator::{
+    Evaluator, EvaluatorError, EvaluatorOutput, health_expectation_required,
+    health_logits_expectation,
+};
 pub use node::{MctsArena, MctsNode, value_from_perspective};
 pub use path::{PathStep, PendingEval};
 pub use search::GumbelMCTS;

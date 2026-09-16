@@ -250,11 +250,12 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
 
     /// 计算节点的复合效用 U = Q_win + λ(|Q_win|) · Q_hp。
     ///
-    /// `health_enabled=false` 或 `health_weight=0` 时退化为纯胜率 `node_q_value`，
-    /// 与旧版行为逐位等价。λ 随 |Q_win| 按 `health_confidence_exp` 幂增长（0 = 常量 λ）。
+    /// `config.health_active()` 为 false（未启用或权重为 0）时退化为纯胜率
+    /// `node_q_value`，与旧版行为逐位等价。λ 随 |Q_win| 按 `health_confidence_exp`
+    /// 幂增长（0 = 常量 λ）。
     pub(crate) fn node_utility_value(&self, node_idx: usize) -> f32 {
         let q_win = self.node_q_value(node_idx);
-        if !self.config.health_enabled || self.config.health_weight <= 0.0 {
+        if !self.config.health_active() {
             return q_win;
         }
         let q_hp = self.node_health_value(node_idx);

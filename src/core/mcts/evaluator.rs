@@ -66,6 +66,38 @@ impl EvaluatorOutput {
     pub fn health_expectation(&self, idx: usize) -> Option<f32> {
         health_logits_expectation(self.health.as_deref(), idx)
     }
+
+    /// 取血量期望，并校验「血量开关与评估器能力一致」（Part C #5）。
+    ///
+    /// `required=true`（= `GumbelConfig::health_active()`）而评估器没给出 health 输出
+    /// （模型只有 policy/value 两头，或后端不支持）时**返回 Err 而非 0**：静默填 0 会让
+    /// 血量项恒为 0 且无任何提示，H2 类实验会在「看起来正常」的表象下得出错误结论。
+    pub fn health_expectation_required(
+        &self,
+        idx: usize,
+        required: bool,
+    ) -> Result<f32, EvaluatorError> {
+        health_expectation_required(self.health.as_deref(), idx, required)
+    }
+}
+
+/// 取血量期望，并按 `required` 校验评估器能力（见
+/// [`EvaluatorOutput::health_expectation_required`]）。供批量自对弈路径复用——
+/// 该路径不经过 `EvaluatorOutput` 载体，只拿得到 `Option<&[Vec<f32>]>`。
+pub fn health_expectation_required(
+    health: Option<&[Vec<f32>]>,
+    idx: usize,
+    required: bool,
+) -> Result<f32, EvaluatorError> {
+    let mu = health_logits_expectation(health, idx);
+    if required && mu.is_none() {
+        return Err(EvaluatorError::new(
+            "GumbelConfig.health_active()=true，但评估器未提供血量分桶输出（模型只有 \
+             policy/value 两头）——血量项会静默恒 0 并污染实验结论。请改用带血量头的 \
+             模型，或关闭 health_enabled/health_weight",
+        ));
+    }
+    Ok(mu.unwrap_or(0.0))
 }
 
 /// 由血量分桶 logits 计算期望血量差 μ ∈ [-1, 1]。

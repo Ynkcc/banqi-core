@@ -59,6 +59,14 @@ impl Default for GumbelConfig {
 }
 
 impl GumbelConfig {
+    /// 血量项是否真的参与复合效用（与 `tree.rs::node_utility_value` 的门控同源）。
+    ///
+    /// `health_enabled=true` 但 `health_weight<=0` 时血量项不影响搜索，因此**不要求**
+    /// 评估器提供血量输出——λ=0 的对照臂允许使用无血量头模型。
+    pub fn health_active(&self) -> bool {
+        self.health_enabled && self.health_weight > 0.0
+    }
+
     /// 标准 Gumbel 配置（c_scale = gumbel_scale = 1.0），仅指定搜索规模。
     /// 供 crate 外（如 banqi-tauri）构造：c_scale/gumbel_scale 为 pub(crate)，
     /// 外部无法使用结构体更新语法。

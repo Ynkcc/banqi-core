@@ -70,11 +70,9 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
             return Ok(());
         };
         let out = self.evaluator.evaluate(std::slice::from_ref(&env))?;
-        let health_mu = if self.config.health_enabled {
-            out.health_expectation(0).unwrap_or(0.0)
-        } else {
-            0.0
-        };
+        // 血量契约校验：血量项参与搜索而评估器没给血量输出时硬失败（Part C #5），
+        // 不再 unwrap_or(0.0) 静默退化。
+        let health_mu = out.health_expectation_required(0, self.config.health_active())?;
         self.apply_root_eval(&out.logits[0], out.values[0], health_mu);
         Ok(())
     }

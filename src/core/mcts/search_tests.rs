@@ -487,3 +487,50 @@ fn game4x4_tree_reuse_no_rebuild_with_random_model() {
         total_rebuilds
     );
 }
+
+/// Part C #5 回归：血量项参与搜索（health_enabled && weight>0）而评估器没有血量输出时，
+/// 搜索必须 Err——不再 `unwrap_or(0.0)` 静默把血量项恒置 0（那会让 H2 类实验在
+/// 「看起来正常」的表象下得出错误结论）。
+#[test]
+fn health_active_without_health_output_fails() {
+    let env = TicTacToeEnv::new();
+    let evaluator = TttMinimaxEvaluator::new();
+    let config = GumbelConfig {
+        num_simulations: 16,
+        max_considered_actions: 9,
+        health_enabled: true,
+        health_weight: 0.15,
+        ..Default::default()
+    };
+    assert!(config.health_active(), "weight>0 时血量项应视为参与搜索");
+    let mut mcts = GumbelMCTS::new(&env, &evaluator, config);
+    let err = mcts
+        .run()
+        .expect_err("缺血量输出的评估器必须使搜索失败，而非静默退化");
+    assert!(
+        err.message().contains("血量"),
+        "错误信息应说明血量契约，实际: {}",
+        err.message()
+    );
+}
+
+/// λ=0 对照臂：`health_enabled=true` 但 `health_weight=0` 时血量项不影响搜索，
+/// **不要求**评估器提供血量输出（允许用无血量头模型做对照），搜索应正常完成。
+#[test]
+fn health_weight_zero_does_not_require_health_output() {
+    let env = TicTacToeEnv::new();
+    let evaluator = TttMinimaxEvaluator::new();
+    let config = GumbelConfig {
+        num_simulations: 16,
+        max_considered_actions: 9,
+        health_enabled: true,
+        health_weight: 0.0,
+        ..Default::default()
+    };
+    assert!(!config.health_active(), "weight=0 时血量项不参与搜索");
+    let mut mcts = GumbelMCTS::new(&env, &evaluator, config);
+    assert!(
+        mcts.run().unwrap().is_some(),
+        "λ=0 对照臂不要求血量输出，搜索应正常完成"
+    );
+}
