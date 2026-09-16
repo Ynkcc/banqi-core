@@ -12,6 +12,7 @@ pub mod error;
 pub mod features;
 pub mod rules;
 pub mod seed;
+pub mod snapshot;
 pub mod symmetry;
 pub mod traits;
 pub mod types;
@@ -27,6 +28,7 @@ pub use config::{
     mini_config,
 };
 pub use error::EnvError;
+pub use snapshot::PositionSnapshot;
 pub use symmetry::{Symmetry, action_permutation, sq_map, transform_action, transform_board_flat};
 pub use types::{ResNetObservation, Move, Piece, PieceType, Player, Slot};
 pub use board::DarkChessEnv;

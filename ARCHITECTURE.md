@@ -36,6 +36,7 @@
 | 2026-09-14 | `Variant` 变体成员定名 `DarkChess4x2`（原 `MiniDarkChess4x2`），字符串标识固定为 `"4x8"` / `"4x4"` / `"4x2"` 并作为 GUI 与前端共享的唯一变体词表（GUI 不再使用 `"dark"` / `"mini"`） | `env/config.rs`；下游 `banqi-gui`（Rust + `frontend/src`）已同步 |
 | 2026-09-15 | MCTS 评估契约改为可失败：新增 `mcts::evaluator::EvaluatorError`（实现 `Display` + `Error`）；`Evaluator::evaluate` / `evaluate_logits` 由 `-> EvaluatorOutput` 改为 `-> Result<EvaluatorOutput, EvaluatorError>`；`GumbelMCTS::expand_root` 与 `GumbelMCTS::run` 同步改为 `run() -> Result<Option<MctsSearchResult>, EvaluatorError>`（`Ok(None)` = 无合法动作，`Err` = 评估失败）。目的：推理失败必须显式向上传播，禁止 panic 或静默退化为均匀策略 | `mcts/evaluator.rs`、`mcts/root.rs`、`mcts/run.rs`、`mcts/mod.rs`、`mcts/search_tests.rs`；破坏性：下游 `banqi-engine` / `banqi-collector` / `banqi-gui` 已同步 |
 | 2026-09-16 | 支撑整局树复用（`banqi-collector` 的 `SelfPlayConfig.tree_reuse`）：①`GumbelMCTS` 新增公开方法 `set_num_simulations(n)`，供复用同一棵树时按步调整 Full / Fast 预算；②`build_result` 的 `mcts_value` 由 `root.q_value()` 改为 `node_q_value(root_idx)` —— 复用子树时新根可能尚未被本次搜索访问（`visit_count=0`），前者会直接返回 0.0 并把 0 当作价值目标写入训练数据，后者对 `N=0` 退化为「已访问子节点均值 / `initial_value`」先验 | `mcts/search.rs`、`mcts/root.rs` |
+| 2026-09-16 | 新增 `env/snapshot.rs`：局面快照 `PositionSnapshot`（棋盘槽位 / 行棋方 / 判和与总步数 / 血量 / 上一步动作 / 暗子袋 / 按型阵亡计数 / 可选 `true_board`）+ 手写紧凑字节编解码 `encode` / `decode`（带版本号，全程边界检查）+ `DarkChessEnv::to_snapshot` / `from_snapshot`。动机：MCTS 需要完整状态，而 episode 特征只含观测信息、`from_board` 又会复位步数/血量/暗子袋/阵亡计数，跨进程「局面重搜（reanalysis）」无法基于两者进行。`EnvError` 新增 `InvalidSnapshot { context }`（输入数据非法，区别于 `BrokenInvariant` 的代码缺陷）；`reset.rs::update_reveal_probabilities` 由私有改为 `pub(crate)` 供还原时复用。不还原的仅两处且不影响搜索语义：`last_revealed_piece`（仅 `step_next` 内部消费的瞬时字段）、`dead_pieces_pool` 的插入顺序（语义只用计数，池按同型聚集的规范序重建）。新增测试：三变体静态状态重建一致、**设种子对局快照重建后与原环境同步续走 60 步逐位一致**（含完整状态字节级比较）、非法载荷拒绝 | `env/snapshot.rs`（新增）、`env/mod.rs`、`env/error.rs`、`env/board/reset.rs` |
 
 ---
 
@@ -383,3 +384,4 @@ core::mcts 与 core::expectimax 之间无相互依赖（各自独立搜索栈，
 | 改局面哈希 / 对称 | `expectimax/zobrist.rs`、`env/symmetry.rs` |
 | 对接神经网络 | `mcts/evaluator.rs`、`expectimax/nnue.rs` |
 | 数据增强 / 动作置换 | `env/symmetry.rs` |
+| 局面快照 / 跨进程重搜（reanalysis） | `env/snapshot.rs` |

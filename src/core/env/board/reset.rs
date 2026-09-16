@@ -139,7 +139,8 @@ impl DarkChessEnv {
         Ok(())
     }
 
-    fn update_reveal_probabilities(&mut self) {
+    /// 由当前暗子袋重算揭示概率表（`snapshot::from_snapshot` 还原状态时复用）。
+    pub(crate) fn update_reveal_probabilities(&mut self) {
         let cfg = &self.config;
         let total_hidden = self.hidden_pieces_count;
 
