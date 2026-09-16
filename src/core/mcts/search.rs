@@ -76,6 +76,13 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         self.arena.get(self.root_idx).env
     }
 
+    /// 设置后续搜索的模拟次数（复用同一棵树时按步调整 Full / Fast 预算）。
+    ///
+    /// 仅影响 `run()` 的预算排程；已积累的访问 / Q 不受影响。
+    pub fn set_num_simulations(&mut self, num_simulations: usize) {
+        self.config.num_simulations = num_simulations;
+    }
+
     /// 将搜索树移动到下一个状态
     ///
     /// 当环境发生实际变动（例如玩家采取了某个动作）时调用。

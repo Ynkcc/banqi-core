@@ -184,7 +184,10 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         let state = root.state.clone()?;
         let player = root.player;
         let improved_policy = self.get_improved_policy();
-        let mcts_value = root.q_value();
+        // 用 node_q_value 而非 root.q_value()：复用子树时新根可能尚未被本次搜索访问
+        // （visit_count=0），后者会直接返回 0.0 并把 0 当成价值目标写进训练数据；
+        // node_q_value 对 N=0 会退化为「已访问子节点均值 / initial_value」先验。
+        let mcts_value = self.node_q_value(self.root_idx);
         let completed_q = self.completed_q(action);
         let root_visit_count = root.visit_count;
         let action_mask = self.root_action_mask.clone();
