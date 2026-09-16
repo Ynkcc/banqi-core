@@ -221,9 +221,20 @@ impl<'a> Reader<'a> {
 // DarkChessEnv ↔ 快照
 // ============================================================================
 
-impl DarkChessEnv {
+/// 可导出 / 重建局面快照的环境（`DarkChessEnv` 与三个变体包装均实现）。
+///
+/// 泛型代码（如跨进程重搜流程）只依赖本 trait，不必知道具体盘面类型；
+/// 变体包装的实现会校验「快照变体 == 本变体」，避免把 4x2 的局面当 4x8 重搜。
+pub trait SnapshotEnv: Sized {
     /// 导出当前局面的完整快照。
-    pub fn to_snapshot(&self) -> PositionSnapshot {
+    fn to_snapshot(&self) -> PositionSnapshot;
+    /// 由快照精确重建环境（载荷非法 / 变体不符时返回 Err）。
+    fn from_snapshot(s: &PositionSnapshot) -> Result<Self, EnvError>;
+}
+
+impl SnapshotEnv for DarkChessEnv {
+    /// 导出当前局面的完整快照。
+    fn to_snapshot(&self) -> PositionSnapshot {
         let n = self.config.total_positions;
         PositionSnapshot {
             variant: self.config.variant,
@@ -243,7 +254,7 @@ impl DarkChessEnv {
     ///
     /// 结构性非法（槽位数与变体不符 / 阵亡计数超出上限 / 步数越界）返回 Err：
     /// 这类输入只可能来自损坏或跨版本的载荷，静默接受会产出语义错误的重搜目标。
-    pub fn from_snapshot(s: &PositionSnapshot) -> Result<Self, EnvError> {
+    fn from_snapshot(s: &PositionSnapshot) -> Result<Self, EnvError> {
         let config = s.variant.config();
         let n = config.total_positions;
         if s.slots.len() != n {

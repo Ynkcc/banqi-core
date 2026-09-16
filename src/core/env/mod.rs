@@ -28,7 +28,7 @@ pub use config::{
     mini_config,
 };
 pub use error::EnvError;
-pub use snapshot::PositionSnapshot;
+pub use snapshot::{PositionSnapshot, SnapshotEnv};
 pub use symmetry::{Symmetry, action_permutation, sq_map, transform_action, transform_board_flat};
 pub use types::{ResNetObservation, Move, Piece, PieceType, Player, Slot};
 pub use board::DarkChessEnv;

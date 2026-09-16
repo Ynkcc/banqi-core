@@ -101,6 +101,27 @@ macro_rules! impl_darkchess_variant {
             }
         }
 
+        /// 局面快照（跨进程重搜 reanalysis 用）：委托 inner，并在重建时校验变体一致，
+        /// 避免把别的变体的局面当本变体重搜。
+        impl crate::core::env::snapshot::SnapshotEnv for $ty {
+            fn to_snapshot(&self) -> crate::core::env::snapshot::PositionSnapshot {
+                crate::core::env::snapshot::SnapshotEnv::to_snapshot(&self.inner)
+            }
+
+            fn from_snapshot(
+                s: &crate::core::env::snapshot::PositionSnapshot,
+            ) -> Result<Self, crate::core::env::EnvError> {
+                if s.variant != $cfg().variant {
+                    return Err(crate::core::env::EnvError::InvalidSnapshot {
+                        context: "快照变体与本变体不符",
+                    });
+                }
+                Ok(Self {
+                    inner: <DarkChessEnv as crate::core::env::snapshot::SnapshotEnv>::from_snapshot(s)?,
+                })
+            }
+        }
+
         impl crate::core::env::GameEnv for $ty {
             fn action_space_size(&self) -> usize {
                 $ACT
